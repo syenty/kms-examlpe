@@ -5,7 +5,7 @@ import { User } from './entities/user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
-import { EncryptionService } from '../encryption/encryption.service';
+import { KmsService } from '../kms/kms.service';
 
 @Injectable()
 export class UsersService {
@@ -14,16 +14,16 @@ export class UsersService {
   constructor(
     @InjectRepository(User)
     private usersRepository: Repository<User>,
-    private encryptionService: EncryptionService,
+    private kmsService: KmsService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<UserResponseDto> {
     try {
       // Encrypt sensitive data
-      const { encrypted: encryptedEmail, keyId: emailKeyId } =
-        await this.encryptionService.encryptEmail(createUserDto.email);
-      const { encrypted: encryptedPhone, keyId: phoneKeyId } =
-        await this.encryptionService.encryptPhone(createUserDto.phone);
+      const emailKeyId = this.kmsService.getSymmetricKeyId()!;
+      const phoneKeyId = this.kmsService.getSymmetricKeyId()!;
+      const encryptedEmail = await this.kmsService.encryptSymmetric(createUserDto.email, emailKeyId);
+      const encryptedPhone = await this.kmsService.encryptSymmetric(createUserDto.phone, phoneKeyId);
 
       const user = this.usersRepository.create({
         name: createUserDto.name,
@@ -68,19 +68,15 @@ export class UsersService {
 
       // Encrypt and update email if provided
       if (updateUserDto.email) {
-        const { encrypted, keyId } = await this.encryptionService.encryptEmail(
-          updateUserDto.email,
-        );
-        user.encryptedEmail = encrypted;
+        const keyId = this.kmsService.getSymmetricKeyId()!;
+        user.encryptedEmail = await this.kmsService.encryptSymmetric(updateUserDto.email, keyId);
         user.emailKeyId = keyId;
       }
 
       // Encrypt and update phone if provided
       if (updateUserDto.phone) {
-        const { encrypted, keyId } = await this.encryptionService.encryptPhone(
-          updateUserDto.phone,
-        );
-        user.encryptedPhone = encrypted;
+        const keyId = this.kmsService.getSymmetricKeyId()!;
+        user.encryptedPhone = await this.kmsService.encryptSymmetric(updateUserDto.phone, keyId);
         user.phoneKeyId = keyId;
       }
 
@@ -101,11 +97,11 @@ export class UsersService {
 
   private async toResponseDto(user: User): Promise<UserResponseDto> {
     try {
-      const email = await this.encryptionService.decryptEmail(
+      const email = await this.kmsService.decryptSymmetric(
         user.encryptedEmail,
         user.emailKeyId,
       );
-      const phone = await this.encryptionService.decryptPhone(
+      const phone = await this.kmsService.decryptSymmetric(
         user.encryptedPhone,
         user.phoneKeyId,
       );
@@ -115,6 +111,8 @@ export class UsersService {
         name: user.name,
         email,
         phone,
+        emailKeyId: user.emailKeyId,
+        phoneKeyId: user.phoneKeyId,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       });
