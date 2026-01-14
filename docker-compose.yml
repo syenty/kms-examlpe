@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: kms-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: userdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kms-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cosmian-kms:
+    image: ghcr.io/cosmian/kms:latest
+    container_name: cosmian-kms
+    environment:
+      # KMS runs in default mode (SQLite backend for simplicity)
+      # For production, configure with PostgreSQL backend
+      KMS_PORT: 9998
+      RUST_LOG: info
+    ports:
+      - "9998:9998"
+    volumes:
+      - kms_data:/var/lib/cosmian-kms
+    networks:
+      - kms-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9998/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  kms_data:
+
+networks:
+  kms-network:
+    driver: bridge
