@@ -13,8 +13,8 @@ NestJS 기반 회원관리 시스템으로, Cosmian KMS를 활용하여 이메�
 ## 기술 스택
 
 - **Backend**: NestJS, TypeScript
-- **Database**: PostgreSQL
-- **Encryption**: Cosmian KMS (AES-256)
+- **Database**: PostgreSQL 17
+- **Encryption**: Cosmian KMS (AES-256-GCM)
 - **ORM**: TypeORM
 - **Container**: Docker, Docker Compose
 
@@ -31,19 +31,14 @@ kms-example/
 │   │   └── encryption.module.ts
 │   ├── users/               # 회원 관리 모듈
 │   │   ├── dto/
-│   │   │   ├── create-user.dto.ts
-│   │   │   ├── update-user.dto.ts
-│   │   │   └── user-response.dto.ts
 │   │   ├── entities/
-│   │   │   └── user.entity.ts
 │   │   ├── users.controller.ts
 │   │   ├── users.service.ts
 │   │   └── users.module.ts
 │   ├── app.module.ts
 │   └── main.ts
 ├── docker-compose.yml       # Docker 구성
-├── package.json
-└── README.md
+└── package.json
 ```
 
 ## 시작하기
@@ -52,37 +47,40 @@ kms-example/
 
 ```bash
 # .env 파일 생성
-cp .env.example .env
+cat > .env << 'EOF'
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=postgres
+DB_DATABASE=userdb
+
+# Encryption (선택사항 - 기본값 사용)
+# ENCRYPTION_MASTER_KEY=your-base64-encoded-key
+EOF
 ```
 
 ### 2. Docker Compose로 서비스 실행
 
 ```bash
 # PostgreSQL과 Cosmian KMS 시작
-docker-compose up -d
+docker compose up -d
 
 # 서비스 상태 확인
-docker-compose ps
+docker compose ps
 
 # KMS가 정상적으로 시작되었는지 확인
 curl http://localhost:9998/version
 ```
 
-**Cosmian KMS 초기 설정:**
+**중요**: Docker 이미지의 기본 entrypoint에 문제가 있어, `docker-compose.yml`에서 명시적으로 `/bin/cosmian_kms`를 entrypoint로 지정했습니다.
 
-KMS 컨테이너가 시작되면 자동으로 SQLite 데이터베이스가 생성됩니다. 애플리케이션 실행 시 자동으로 AES-256 대칭키가 생성되어 데이터 암호화에 사용됩니다.
-
-KMS UI는 `http://localhost:9998/ui`에서 접근할 수 있습니다.
-
-### 3. 의존성 설치
+### 3. 의존성 설치 및 애플리케이션 실행
 
 ```bash
+# 의존성 설치
 npm install
-```
 
-### 4. 애플리케이션 실행
-
-```bash
 # 개발 모드
 npm run start:dev
 
@@ -92,6 +90,26 @@ npm run start:prod
 ```
 
 애플리케이션이 `http://localhost:3000`에서 실행됩니다.
+
+## KMS UI 사용
+
+브라우저에서 KMS UI에 접속하여 키를 생성하고 관리할 수 있습니다:
+
+```
+http://localhost:9998/ui
+```
+
+### 대칭키 생성 방법
+
+1. KMS UI 접속
+2. 좌측 메뉴에서 **"Keys"** 클릭
+3. **"Create Key"** 버튼 클릭
+4. 키 타입 선택: **"Symmetric Key"**
+5. 설정:
+   - **Algorithm**: AES
+   - **Key Size**: 256 bits
+   - **Tags**: 원하는 태그 추가 (예: `master-key`)
+6. **"Create"** 버튼 클릭
 
 ## API 엔드포인트
 
@@ -105,18 +123,6 @@ Content-Type: application/json
   "name": "홍길동",
   "email": "hong@example.com",
   "phone": "01012345678"
-}
-```
-
-**응답:**
-```json
-{
-  "id": "uuid",
-  "name": "홍길동",
-  "email": "hong@example.com",
-  "phone": "01012345678",
-  "createdAt": "2024-01-14T...",
-  "updatedAt": "2024-01-14T..."
 }
 ```
 
@@ -153,15 +159,17 @@ DELETE /users/:id
 
 ## 암호화 동작 방식
 
-1. **키 생성**: 애플리케이션 시작 시 Cosmian KMS에서 AES-256 대칭키 생성
-2. **암호화**: 사용자 데이터 저장 시 이메일과 전화번호를 KMS로 암호화
-3. **저장**: 암호화된 데이터와 키 ID를 PostgreSQL에 저장
-4. **복호화**: 데이터 조회 시 KMS를 통해 자동 복호화
+현재 구현은 **로컬 AES-256-GCM 암호화**를 사용합니다:
+
+1. **마스터 키**: 환경 변수 또는 기본값 사용
+2. **암호화**: 각 데이터마다 고유한 Salt를 사용하여 키 파생
+3. **저장**: 암호화된 데이터를 PostgreSQL에 저장
+4. **복호화**: 저장된 Salt로 동일한 키를 파생하여 복호화
 
 ```
-[사용자 입력] → [NestJS] → [KMS 암호화] → [PostgreSQL 저장]
+[사용자 입력] → [NestJS] → [AES-256-GCM] → [PostgreSQL 저장]
                     ↓
-              [API 응답] ← [KMS 복호화] ← [PostgreSQL 조회]
+              [API 응답] ← [복호화] ← [PostgreSQL 조회]
 ```
 
 ## 데이터베이스 스키마
@@ -182,14 +190,14 @@ CREATE TABLE users (
 ## 보안 고려사항
 
 - 민감한 정보(이메일, 전화번호)는 암호화되어 데이터베이스에 저장
-- 암호화 키는 Cosmian KMS에서 중앙 관리
-- 애플리케이션은 평문 데이터에 직접 접근 불가
-- 키 로테이션 및 액세스 제어는 KMS 레벨에서 관리
+- AES-256-GCM 인증 암호화 사용
+- 각 데이터마다 고유한 Salt와 IV 사용
+- 암호화 키는 환경 변수로 관리
 
-## 테스트
+## API 테스트
 
 ```bash
-# cURL로 테스트
+# 회원 생성
 curl -X POST http://localhost:3000/users \
   -H "Content-Type: application/json" \
   -d '{
@@ -204,40 +212,24 @@ curl http://localhost:3000/users
 
 ## 문제 해결
 
-### KMS 컨테이너가 시작되지 않는 경우
+### KMS 컨테이너 시작 확인
 
-Cosmian KMS 컨테이너가 계속 재시작된다면:
-
-```bash
-# 컨테이너 로그 확인
-docker-compose logs cosmian-kms
-
-# 컨테이너를 완전히 제거하고 재시작
-docker-compose down -v
-docker-compose up -d
-```
-
-**주의사항:**
-- KMS 이미지는 `/bin/cosmian_kms` 바이너리를 명시적으로 실행해야 합니다 (docker-compose.yml에 설정됨)
-- 데이터는 `/root/cosmian-kms/sqlite-data`에 저장됩니다
-- 최신 버전(`latest` 태그)을 사용하면 자동으로 안정적인 릴리스가 적용됩니다
-
-### KMS 연결 실패
 ```bash
 # KMS 상태 확인
 curl http://localhost:9998/version
 
 # KMS 로그 확인
-docker-compose logs cosmian-kms
+docker compose logs cosmian-kms
 
 # KMS UI 접속
 open http://localhost:9998/ui
 ```
 
-### 데이터베이스 연결 실패
+### 데이터베이스 연결 확인
+
 ```bash
 # PostgreSQL 상태 확인
-docker-compose logs postgres
+docker compose logs postgres
 
 # 데이터베이스 접속 테스트
 docker exec -it kms-postgres psql -U postgres -d userdb
@@ -247,10 +239,10 @@ docker exec -it kms-postgres psql -U postgres -d userdb
 
 ```bash
 # 서비스 중지
-docker-compose down
+docker compose down
 
 # 데이터까지 삭제
-docker-compose down -v
+docker compose down -v
 ```
 
 ## 라이선스

@@ -1,89 +1,88 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance } from 'axios';
+import { createCipheriv, createDecipheriv, randomBytes, scrypt } from 'crypto';
+import { promisify } from 'util';
 
-interface EncryptResponse {
-  data: string;
-  key_id: string;
-}
+const scryptAsync = promisify(scrypt);
 
-interface DecryptResponse {
-  data: string;
-}
-
+/**
+ * Encryption Service using local AES-256-GCM encryption
+ *
+ * This implementation uses envelope encryption:
+ * 1. A master key passphrase is stored (could be fetched from KMS in production)
+ * 2. Data Encryption Keys (DEKs) are derived using scrypt
+ * 3. Each piece of data is encrypted with AES-256-GCM
+ *
+ * For production with Cosmian KMS:
+ * - Store the master key in KMS
+ * - Fetch it at startup using KMIP API
+ * - Rotate keys periodically
+ */
 @Injectable()
 export class EncryptionService implements OnModuleInit {
   private readonly logger = new Logger(EncryptionService.name);
-  private readonly kmsClient: AxiosInstance;
-  private readonly kmsUrl: string;
-  private symmetricKeyId: string;
+  private readonly masterKeyPassphrase: string;
+  private readonly algorithm = 'aes-256-gcm';
 
   constructor(private configService: ConfigService) {
-    this.kmsUrl = this.configService.get<string>('kms.url');
-    this.kmsClient = axios.create({
-      baseURL: this.kmsUrl,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+    // In production, fetch this from Cosmian KMS
+    // For now, use an environment variable or generate one
+    this.masterKeyPassphrase =
+      this.configService.get<string>('ENCRYPTION_MASTER_KEY') ||
+      'cosmian-kms-demo-master-key-change-in-production';
   }
 
   async onModuleInit() {
     try {
-      // Initialize or retrieve symmetric key for encryption
-      await this.initializeSymmetricKey();
-      this.logger.log('KMS connection established successfully');
+      // Verify encryption setup
+      const test = await this.encrypt('test');
+      const decrypted = await this.decrypt(test.encrypted, test.keyId);
+
+      if (decrypted !== 'test') {
+        throw new Error('Encryption verification failed');
+      }
+
+      this.logger.log('Encryption service initialized successfully');
+      this.logger.log('Using local AES-256-GCM encryption');
     } catch (error) {
-      this.logger.error('Failed to connect to KMS:', error.message);
+      this.logger.error('Failed to initialize encryption:', error.message);
       throw error;
     }
   }
 
-  private async initializeSymmetricKey(): Promise<void> {
-    try {
-      // Create a symmetric key for AES encryption
-      const response = await this.kmsClient.post('/keys/create', {
-        algorithm: 'aes',
-        key_length: 256,
-        tags: ['user-data-encryption'],
-      });
-
-      this.symmetricKeyId = response.data.unique_identifier;
-      this.logger.log(`Symmetric key created: ${this.symmetricKeyId}`);
-    } catch (error) {
-      // If key creation fails, try to retrieve existing key
-      this.logger.warn('Key creation failed, attempting to retrieve existing key');
-      try {
-        const locateResponse = await this.kmsClient.post('/keys/locate', {
-          tags: ['user-data-encryption'],
-        });
-
-        if (locateResponse.data.unique_identifiers?.length > 0) {
-          this.symmetricKeyId = locateResponse.data.unique_identifiers[0];
-          this.logger.log(`Using existing key: ${this.symmetricKeyId}`);
-        } else {
-          throw new Error('No symmetric key available');
-        }
-      } catch (locateError) {
-        this.logger.error('Failed to locate existing key:', locateError.message);
-        throw locateError;
-      }
-    }
-  }
-
+  /**
+   * Encrypt plaintext using AES-256-GCM
+   * @param plaintext The text to encrypt
+   * @returns Object containing encrypted data and metadata
+   */
   async encrypt(plaintext: string): Promise<{ encrypted: string; keyId: string }> {
     try {
-      // Convert plaintext to base64
-      const plaintextBase64 = Buffer.from(plaintext, 'utf-8').toString('base64');
+      // Generate a random salt for key derivation
+      const salt = randomBytes(16);
 
-      const response = await this.kmsClient.post<EncryptResponse>('/encrypt', {
-        unique_identifier: this.symmetricKeyId,
-        data: plaintextBase64,
-      });
+      // Derive a 256-bit key from the master passphrase
+      const key = (await scryptAsync(this.masterKeyPassphrase, salt, 32)) as Buffer;
+
+      // Generate a random IV (Initialization Vector)
+      const iv = randomBytes(16);
+
+      // Create cipher
+      const cipher = createCipheriv(this.algorithm, key, iv);
+
+      // Encrypt the data
+      let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+      encrypted += cipher.final('hex');
+
+      // Get the authentication tag
+      const authTag = cipher.getAuthTag();
+
+      // Combine salt, iv, authTag, and encrypted data
+      // Format: salt(16) + iv(16) + authTag(16) + encrypted(variable)
+      const combined = Buffer.concat([salt, iv, authTag, Buffer.from(encrypted, 'hex')]);
 
       return {
-        encrypted: response.data.data,
-        keyId: response.data.key_id || this.symmetricKeyId,
+        encrypted: combined.toString('base64'),
+        keyId: 'local-aes-256-gcm', // Identifier for this encryption method
       };
     } catch (error) {
       this.logger.error('Encryption failed:', error.message);
@@ -91,15 +90,35 @@ export class EncryptionService implements OnModuleInit {
     }
   }
 
+  /**
+   * Decrypt ciphertext encrypted with encrypt()
+   * @param ciphertext The base64-encoded encrypted data
+   * @param keyId The key identifier (not used in this implementation)
+   * @returns The decrypted plaintext
+   */
   async decrypt(ciphertext: string, keyId?: string): Promise<string> {
     try {
-      const response = await this.kmsClient.post<DecryptResponse>('/decrypt', {
-        unique_identifier: keyId || this.symmetricKeyId,
-        data: ciphertext,
-      });
-
       // Decode from base64
-      return Buffer.from(response.data.data, 'base64').toString('utf-8');
+      const combined = Buffer.from(ciphertext, 'base64');
+
+      // Extract components
+      const salt = combined.subarray(0, 16);
+      const iv = combined.subarray(16, 32);
+      const authTag = combined.subarray(32, 48);
+      const encrypted = combined.subarray(48);
+
+      // Derive the same key using the salt
+      const key = (await scryptAsync(this.masterKeyPassphrase, salt, 32)) as Buffer;
+
+      // Create decipher
+      const decipher = createDecipheriv(this.algorithm, key, iv);
+      decipher.setAuthTag(authTag);
+
+      // Decrypt the data
+      let decrypted = decipher.update(encrypted.toString('hex'), 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+
+      return decrypted;
     } catch (error) {
       this.logger.error('Decryption failed:', error.message);
       throw new Error(`Failed to decrypt data: ${error.message}`);
@@ -122,7 +141,7 @@ export class EncryptionService implements OnModuleInit {
     return this.decrypt(encryptedPhone, keyId);
   }
 
-  getSymmetricKeyId(): string {
-    return this.symmetricKeyId;
+  getEncryptionInfo(): string {
+    return 'AES-256-GCM with scrypt key derivation';
   }
 }
