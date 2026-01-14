@@ -2,31 +2,34 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createCipheriv, createDecipheriv, randomBytes, scrypt } from 'crypto';
 import { promisify } from 'util';
+import { KmsService } from '../kms/kms.service';
 
 const scryptAsync = promisify(scrypt);
 
 /**
- * Encryption Service using local AES-256-GCM encryption
+ * Encryption Service with Cosmian KMS integration
  *
- * This implementation uses envelope encryption:
- * 1. A master key passphrase is stored (could be fetched from KMS in production)
- * 2. Data Encryption Keys (DEKs) are derived using scrypt
- * 3. Each piece of data is encrypted with AES-256-GCM
+ * This service supports two modes:
+ * 1. KMS Mode: Use Cosmian KMS for encryption/decryption
+ * 2. Local Mode: Fallback to local AES-256-GCM encryption
  *
- * For production with Cosmian KMS:
- * - Store the master key in KMS
- * - Fetch it at startup using KMIP API
- * - Rotate keys periodically
+ * KMS Mode is preferred when available for:
+ * - Centralized key management
+ * - Key rotation support
+ * - Audit logging
+ * - Access control
  */
 @Injectable()
 export class EncryptionService implements OnModuleInit {
   private readonly logger = new Logger(EncryptionService.name);
   private readonly masterKeyPassphrase: string;
   private readonly algorithm = 'aes-256-gcm';
+  private useKms: boolean = false;
 
-  constructor(private configService: ConfigService) {
-    // In production, fetch this from Cosmian KMS
-    // For now, use an environment variable or generate one
+  constructor(
+    private configService: ConfigService,
+    private kmsService: KmsService,
+  ) {
     this.masterKeyPassphrase =
       this.configService.get<string>('ENCRYPTION_MASTER_KEY') ||
       'cosmian-kms-demo-master-key-change-in-production';
@@ -34,16 +37,36 @@ export class EncryptionService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      // Verify encryption setup
-      const test = await this.encrypt('test');
-      const decrypted = await this.decrypt(test.encrypted, test.keyId);
+      // Check if KMS is available and configured
+      const symmetricKeyId = this.kmsService.getSymmetricKeyId();
+      if (symmetricKeyId) {
+        // Try to use KMS
+        try {
+          const test = await this.kmsService.encryptSymmetric('test', symmetricKeyId);
+          const decrypted = await this.kmsService.decryptSymmetric(test, symmetricKeyId);
+
+          if (decrypted === 'test') {
+            this.useKms = true;
+            this.logger.log('✅ Encryption service initialized with Cosmian KMS');
+            this.logger.log(`   Using symmetric key: ${symmetricKeyId}`);
+            return;
+          }
+        } catch (kmsError) {
+          this.logger.warn(`KMS test failed: ${kmsError.message}`);
+          this.logger.warn('Falling back to local encryption');
+        }
+      }
+
+      // Fallback to local encryption
+      const test = await this.encryptLocal('test');
+      const decrypted = await this.decryptLocal(test.encrypted);
 
       if (decrypted !== 'test') {
         throw new Error('Encryption verification failed');
       }
 
-      this.logger.log('Encryption service initialized successfully');
-      this.logger.log('Using local AES-256-GCM encryption');
+      this.logger.log('✅ Encryption service initialized with local AES-256-GCM');
+      this.logger.warn('   ⚠️  KMS not configured - using local encryption');
     } catch (error) {
       this.logger.error('Failed to initialize encryption:', error.message);
       throw error;
@@ -51,11 +74,55 @@ export class EncryptionService implements OnModuleInit {
   }
 
   /**
-   * Encrypt plaintext using AES-256-GCM
+   * Encrypt plaintext (uses KMS if available, otherwise local)
    * @param plaintext The text to encrypt
    * @returns Object containing encrypted data and metadata
    */
   async encrypt(plaintext: string): Promise<{ encrypted: string; keyId: string }> {
+    if (this.useKms) {
+      const symmetricKeyId = this.kmsService.getSymmetricKeyId();
+      if (symmetricKeyId) {
+        try {
+          const encrypted = await this.kmsService.encryptSymmetric(plaintext, symmetricKeyId);
+          return {
+            encrypted,
+            keyId: symmetricKeyId,
+          };
+        } catch (error) {
+          this.logger.warn(`KMS encryption failed, falling back to local: ${error.message}`);
+        }
+      }
+    }
+
+    // Fallback to local encryption
+    return this.encryptLocal(plaintext);
+  }
+
+  /**
+   * Decrypt ciphertext (uses KMS if available, otherwise local)
+   * @param ciphertext The encrypted data
+   * @param keyId The key identifier
+   * @returns The decrypted plaintext
+   */
+  async decrypt(ciphertext: string, keyId?: string): Promise<string> {
+    if (this.useKms && keyId && !keyId.startsWith('local-')) {
+      try {
+        return await this.kmsService.decryptSymmetric(ciphertext, keyId);
+      } catch (error) {
+        this.logger.warn(`KMS decryption failed, falling back to local: ${error.message}`);
+      }
+    }
+
+    // Fallback to local decryption
+    return this.decryptLocal(ciphertext);
+  }
+
+  /**
+   * Encrypt plaintext using local AES-256-GCM
+   * @param plaintext The text to encrypt
+   * @returns Object containing encrypted data and metadata
+   */
+  private async encryptLocal(plaintext: string): Promise<{ encrypted: string; keyId: string }> {
     try {
       // Generate a random salt for key derivation
       const salt = randomBytes(16);
@@ -82,21 +149,20 @@ export class EncryptionService implements OnModuleInit {
 
       return {
         encrypted: combined.toString('base64'),
-        keyId: 'local-aes-256-gcm', // Identifier for this encryption method
+        keyId: 'local-aes-256-gcm',
       };
     } catch (error) {
-      this.logger.error('Encryption failed:', error.message);
+      this.logger.error('Local encryption failed:', error.message);
       throw new Error(`Failed to encrypt data: ${error.message}`);
     }
   }
 
   /**
-   * Decrypt ciphertext encrypted with encrypt()
+   * Decrypt ciphertext using local AES-256-GCM
    * @param ciphertext The base64-encoded encrypted data
-   * @param keyId The key identifier (not used in this implementation)
    * @returns The decrypted plaintext
    */
-  async decrypt(ciphertext: string, keyId?: string): Promise<string> {
+  private async decryptLocal(ciphertext: string): Promise<string> {
     try {
       // Decode from base64
       const combined = Buffer.from(ciphertext, 'base64');
@@ -120,7 +186,7 @@ export class EncryptionService implements OnModuleInit {
 
       return decrypted;
     } catch (error) {
-      this.logger.error('Decryption failed:', error.message);
+      this.logger.error('Local decryption failed:', error.message);
       throw new Error(`Failed to decrypt data: ${error.message}`);
     }
   }
@@ -142,6 +208,9 @@ export class EncryptionService implements OnModuleInit {
   }
 
   getEncryptionInfo(): string {
-    return 'AES-256-GCM with scrypt key derivation';
+    if (this.useKms) {
+      return `Cosmian KMS (Symmetric Key: ${this.kmsService.getSymmetricKeyId()})`;
+    }
+    return 'Local AES-256-GCM with scrypt key derivation';
   }
 }
