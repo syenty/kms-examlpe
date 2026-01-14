@@ -115,6 +115,8 @@ export class UsersService {
         name: user.name,
         email,
         phone,
+        emailKeyId: user.emailKeyId,
+        phoneKeyId: user.phoneKeyId,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       });

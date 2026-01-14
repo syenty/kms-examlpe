@@ -3,6 +3,8 @@ export class UserResponseDto {
   name: string;
   email: string;
   phone: string;
+  emailKeyId?: string;
+  phoneKeyId?: string;
   createdAt: Date;
   updatedAt: Date;
 

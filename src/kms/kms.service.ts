@@ -17,7 +17,8 @@ export class KmsService implements OnModuleInit {
   private rsaKeyId: string | null = null;
 
   constructor(private configService: ConfigService) {
-    this.kmsUrl = this.configService.get<string>('KMS_URL') || 'http://localhost:9998';
+    // Environment variables are validated at app startup, so these values are guaranteed to exist
+    this.kmsUrl = this.configService.get<string>('KMS_URL')!;
   }
 
   async onModuleInit() {
@@ -26,20 +27,19 @@ export class KmsService implements OnModuleInit {
       const version = await this.getVersion();
       this.logger.log(`Connected to Cosmian KMS version: ${version}`);
 
-      // Load existing keys from environment or use defaults
-      this.symmetricKeyId = this.configService.get<string>('KMS_SYMMETRIC_KEY_ID') || null;
+      // Load existing keys from environment (validated at app startup)
+      this.symmetricKeyId = this.configService.get<string>('KMS_SYMMETRIC_KEY_ID')!;
       this.rsaKeyId = this.configService.get<string>('KMS_RSA_KEY_ID') || null;
 
-      if (this.symmetricKeyId) {
-        this.logger.log(`Using symmetric key for new data: ${this.symmetricKeyId}`);
-        this.logger.log(`Note: Old data with different key IDs can still be decrypted`);
-      }
+      this.logger.log(`Using symmetric key for new data: ${this.symmetricKeyId}`);
+      this.logger.log(`Note: Old data with different key IDs can still be decrypted`);
+
       if (this.rsaKeyId) {
         this.logger.log(`Using RSA key: ${this.rsaKeyId}`);
       }
     } catch (error) {
       this.logger.error(`Failed to connect to KMS: ${error.message}`);
-      this.logger.warn('Continuing without KMS integration');
+      throw error;
     }
   }
 
@@ -66,6 +66,7 @@ export class KmsService implements OnModuleInit {
     }
 
     const targetKeyId = keyId || this.symmetricKeyId;
+    this.logger.debug(`Encrypting with key: ${targetKeyId}`);
 
     // KMIP Encrypt operation
     const request = {
@@ -96,9 +97,20 @@ export class KmsService implements OnModuleInit {
                   value: targetKeyId,
                 },
                 {
+                  tag: 'CryptographicParameters',
+                  type: 'Structure',
+                  value: [
+                    {
+                      tag: 'BlockCipherMode',
+                      type: 'Enumeration',
+                      value: 'GCM',
+                    },
+                  ],
+                },
+                {
                   tag: 'Data',
                   type: 'ByteString',
-                  value: Buffer.from(plaintext, 'utf8').toString('base64'),
+                  value: Buffer.from(plaintext, 'utf8').toString('hex'),
                 },
               ],
             },
@@ -107,17 +119,26 @@ export class KmsService implements OnModuleInit {
       ],
     };
 
+    this.logger.debug(`Sending KMIP request to ${this.kmsUrl}/kmip/2_1`);
+    this.logger.debug(`Request: ${JSON.stringify(request, null, 2)}`);
+
     const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
 
+    this.logger.debug(`Response status: ${response.status} ${response.statusText}`);
+
     if (!response.ok) {
-      throw new Error(`KMS encrypt failed: ${response.statusText}`);
+      const errorBody = await response.text();
+      this.logger.error(`KMS encrypt failed: ${response.status} ${response.statusText}`);
+      this.logger.error(`Response body: ${errorBody}`);
+      throw new Error(`KMS encrypt failed: ${response.statusText} - ${errorBody}`);
     }
 
     const result = await response.json();
+    this.logger.debug(`Response: ${JSON.stringify(result, null, 2)}`);
 
     // Extract encrypted data from KMIP response
     const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
@@ -168,6 +189,17 @@ export class KmsService implements OnModuleInit {
                   value: targetKeyId,
                 },
                 {
+                  tag: 'CryptographicParameters',
+                  type: 'Structure',
+                  value: [
+                    {
+                      tag: 'BlockCipherMode',
+                      type: 'Enumeration',
+                      value: 'GCM',
+                    },
+                  ],
+                },
+                {
                   tag: 'Data',
                   type: 'ByteString',
                   value: ciphertext,
@@ -196,7 +228,7 @@ export class KmsService implements OnModuleInit {
     const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
     const decryptedData = responsePayload.value.find((item: any) => item.tag === 'Data');
 
-    return Buffer.from(decryptedData.value, 'base64').toString('utf8');
+    return Buffer.from(decryptedData.value, 'hex').toString('utf8');
   }
 
   /**

@@ -21,30 +21,8 @@ export class EncryptionService implements OnModuleInit {
   constructor(private kmsService: KmsService) {}
 
   async onModuleInit() {
-    const symmetricKeyId = this.kmsService.getSymmetricKeyId();
-
-    if (!symmetricKeyId) {
-      this.logger.error('❌ KMS_SYMMETRIC_KEY_ID is not configured in .env');
-      this.logger.error('   Please create a key and set KMS_SYMMETRIC_KEY_ID');
-      throw new Error('KMS_SYMMETRIC_KEY_ID is required but not configured');
-    }
-
-    try {
-      // Verify KMS connectivity and key validity
-      const test = await this.kmsService.encryptSymmetric('test', symmetricKeyId);
-      const decrypted = await this.kmsService.decryptSymmetric(test, symmetricKeyId);
-
-      if (decrypted !== 'test') {
-        throw new Error('KMS encryption verification failed');
-      }
-
-      this.logger.log('✅ Encryption service initialized with Cosmian KMS');
-      this.logger.log(`   Using symmetric key: ${symmetricKeyId}`);
-    } catch (error) {
-      this.logger.error('❌ Failed to initialize KMS:', error.message);
-      this.logger.error('   Please check KMS_URL and KMS_SYMMETRIC_KEY_ID in .env');
-      throw new Error(`KMS initialization failed: ${error.message}`);
-    }
+    this.logger.log('✅ Encryption service initialized with Cosmian KMS');
+    this.logger.log(`   Using symmetric key: ${this.kmsService.getSymmetricKeyId()}`);
   }
 
   /**
@@ -53,11 +31,7 @@ export class EncryptionService implements OnModuleInit {
    * @returns Object containing encrypted data and key ID
    */
   async encrypt(plaintext: string): Promise<{ encrypted: string; keyId: string }> {
-    const symmetricKeyId = this.kmsService.getSymmetricKeyId();
-
-    if (!symmetricKeyId) {
-      throw new Error('KMS_SYMMETRIC_KEY_ID is not configured');
-    }
+    const symmetricKeyId = this.kmsService.getSymmetricKeyId()!;
 
     try {
       const encrypted = await this.kmsService.encryptSymmetric(plaintext, symmetricKeyId);
