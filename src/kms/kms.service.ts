@@ -27,8 +27,8 @@ export class KmsService implements OnModuleInit {
       this.logger.log(`Connected to Cosmian KMS version: ${version}`);
 
       // Load existing keys from environment or use defaults
-      this.symmetricKeyId = this.configService.get<string>('KMS_SYMMETRIC_KEY_ID');
-      this.rsaKeyId = this.configService.get<string>('KMS_RSA_KEY_ID');
+      this.symmetricKeyId = this.configService.get<string>('KMS_SYMMETRIC_KEY_ID') || null;
+      this.rsaKeyId = this.configService.get<string>('KMS_RSA_KEY_ID') || null;
 
       if (this.symmetricKeyId) {
         this.logger.log(`Using symmetric key for new data: ${this.symmetricKeyId}`);
@@ -227,5 +227,333 @@ export class KmsService implements OnModuleInit {
    */
   getRsaKeyId(): string | null {
     return this.rsaKeyId;
+  }
+
+  /**
+   * Create a new symmetric key in KMS
+   *
+   * @param keySize Key size in bits (128, 192, or 256)
+   * @param tag Optional tag for the key
+   * @returns The ID of the newly created key
+   */
+  async createSymmetricKey(keySize: number = 256, tag?: string): Promise<string> {
+    const attributes: any[] = [
+      {
+        tag: 'CryptographicAlgorithm',
+        type: 'Enumeration',
+        value: 'AES',
+      },
+      {
+        tag: 'CryptographicLength',
+        type: 'Integer',
+        value: keySize,
+      },
+      {
+        tag: 'CryptographicUsageMask',
+        type: 'Integer',
+        value: 2108, // Encrypt | Decrypt
+      },
+      {
+        tag: 'KeyFormatType',
+        type: 'Enumeration',
+        value: 'TransparentSymmetricKey',
+      },
+    ];
+
+    // Add tag if provided
+    if (tag) {
+      attributes.push({
+        tag: 'VendorAttributes',
+        type: 'Structure',
+        value: [
+          {
+            tag: 'VendorAttributes',
+            type: 'Structure',
+            value: [
+              {
+                tag: 'VendorIdentification',
+                type: 'TextString',
+                value: 'cosmian',
+              },
+              {
+                tag: 'AttributeName',
+                type: 'TextString',
+                value: 'tag',
+              },
+              {
+                tag: 'AttributeValue',
+                type: 'TextString',
+                value: tag,
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    // KMIP Create operation
+    const request = {
+      tag: 'Create',
+      type: 'Structure',
+      value: [
+        {
+          tag: 'RequestHeader',
+          type: 'Structure',
+          value: [],
+        },
+        {
+          tag: 'BatchItem',
+          type: 'Structure',
+          value: [
+            {
+              tag: 'Operation',
+              type: 'Enumeration',
+              value: 'Create',
+            },
+            {
+              tag: 'RequestPayload',
+              type: 'Structure',
+              value: [
+                {
+                  tag: 'ObjectType',
+                  type: 'Enumeration',
+                  value: 'SymmetricKey',
+                },
+                {
+                  tag: 'Attributes',
+                  type: 'Structure',
+                  value: attributes,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`KMS create key failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // Extract new key ID from KMIP response
+    const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
+    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
+    const uniqueIdentifier = responsePayload.value.find((item: any) => item.tag === 'UniqueIdentifier');
+
+    const newKeyId = uniqueIdentifier.value;
+
+    this.logger.log(`✅ Symmetric key created`);
+    this.logger.log(`   Key ID: ${newKeyId}`);
+    this.logger.log(`   Algorithm: AES-${keySize}`);
+    if (tag) {
+      this.logger.log(`   Tag: ${tag}`);
+    }
+
+    return newKeyId;
+  }
+
+  /**
+   * Delete (Destroy) a key from KMS
+   * WARNING: This is irreversible!
+   *
+   * @param keyId The ID of the key to delete
+   */
+  async deleteKey(keyId: string): Promise<void> {
+    const request = {
+      tag: 'Destroy',
+      type: 'Structure',
+      value: [
+        {
+          tag: 'RequestHeader',
+          type: 'Structure',
+          value: [],
+        },
+        {
+          tag: 'BatchItem',
+          type: 'Structure',
+          value: [
+            {
+              tag: 'Operation',
+              type: 'Enumeration',
+              value: 'Destroy',
+            },
+            {
+              tag: 'RequestPayload',
+              type: 'Structure',
+              value: [
+                {
+                  tag: 'UniqueIdentifier',
+                  type: 'TextString',
+                  value: keyId,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`KMS delete key failed: ${response.statusText}`);
+    }
+
+    this.logger.log(`✅ Key deleted (destroyed): ${keyId}`);
+    this.logger.warn(`   This operation is irreversible!`);
+  }
+
+  /**
+   * Re-key operation: Generate a replacement key for an existing symmetric key
+   * This is the native KMS way to rotate keys
+   *
+   * @param existingKeyId The ID of the existing symmetric key to replace
+   * @returns The ID of the new replacement key
+   */
+  async reKeySymmetric(existingKeyId?: string): Promise<string> {
+    const targetKeyId = existingKeyId || this.symmetricKeyId;
+
+    if (!targetKeyId) {
+      throw new Error('No symmetric key ID provided for re-key operation');
+    }
+
+    // KMIP ReKey operation
+    const request = {
+      tag: 'ReKey',
+      type: 'Structure',
+      value: [
+        {
+          tag: 'RequestHeader',
+          type: 'Structure',
+          value: [],
+        },
+        {
+          tag: 'BatchItem',
+          type: 'Structure',
+          value: [
+            {
+              tag: 'Operation',
+              type: 'Enumeration',
+              value: 'ReKey',
+            },
+            {
+              tag: 'RequestPayload',
+              type: 'Structure',
+              value: [
+                {
+                  tag: 'UniqueIdentifier',
+                  type: 'TextString',
+                  value: targetKeyId,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`KMS re-key failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // Extract new key ID from KMIP response
+    const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
+    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
+    const uniqueIdentifier = responsePayload.value.find((item: any) => item.tag === 'UniqueIdentifier');
+
+    const newKeyId = uniqueIdentifier.value;
+
+    this.logger.log(`✅ Re-key successful`);
+    this.logger.log(`   Old key: ${targetKeyId}`);
+    this.logger.log(`   New key: ${newKeyId}`);
+    this.logger.log(`   Note: KMS automatically created a link between old and new keys`);
+
+    return newKeyId;
+  }
+
+  /**
+   * Revoke a key (prevent new encryptions, allow existing decryptions)
+   *
+   * @param keyId The ID of the key to revoke
+   * @param reason Revocation reason
+   */
+  async revokeKey(keyId: string, reason: string = 'Unspecified'): Promise<void> {
+    const request = {
+      tag: 'Revoke',
+      type: 'Structure',
+      value: [
+        {
+          tag: 'RequestHeader',
+          type: 'Structure',
+          value: [],
+        },
+        {
+          tag: 'BatchItem',
+          type: 'Structure',
+          value: [
+            {
+              tag: 'Operation',
+              type: 'Enumeration',
+              value: 'Revoke',
+            },
+            {
+              tag: 'RequestPayload',
+              type: 'Structure',
+              value: [
+                {
+                  tag: 'UniqueIdentifier',
+                  type: 'TextString',
+                  value: keyId,
+                },
+                {
+                  tag: 'RevocationReason',
+                  type: 'Structure',
+                  value: [
+                    {
+                      tag: 'RevocationReasonCode',
+                      type: 'Enumeration',
+                      value: reason,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`KMS revoke failed: ${response.statusText}`);
+    }
+
+    this.logger.log(`✅ Key revoked: ${keyId}`);
+    this.logger.log(`   Reason: ${reason}`);
   }
 }

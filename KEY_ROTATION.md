@@ -41,6 +41,65 @@ async decrypt(ciphertext: string, keyId?: string): Promise<string> {
 }
 ```
 
+## 키 로테이션 방법
+
+### 방법 1: KMS 네이티브 Re-key (권장 ⭐)
+
+Cosmian KMS의 **Re-key** 기능을 사용하여 자동으로 대체 키를 생성합니다.
+
+**장점:**
+- ✅ KMS가 자동으로 키 간 링크 생성 (키 관계 추적)
+- ✅ 키 속성 자동 복사 (activation date, tags 등)
+- ✅ KMIP 표준 준수
+- ✅ 간단한 사용법 (매개변수 불필요)
+
+**사용법:**
+```bash
+# 현재 KMS_SYMMETRIC_KEY_ID를 기반으로 새 키 생성 및 재암호화
+npm run rotate-keys:native
+```
+
+**출력 예시:**
+```
+🔄 Starting native KMS key rotation...
+
+🔑 Current Key ID: abc-old-key-id
+
+📝 Step 1: Generating replacement key using KMS Re-key operation...
+✅ Re-key successful
+   Old key: abc-old-key-id
+   New key: xyz-new-key-id
+   Note: KMS automatically created a link between old and new keys
+
+📝 Step 2: Re-encrypting user data...
+
+📊 Found 15 users to re-encrypt
+
+[1/15] Processing user: 홍길동 (uuid-1)
+  ✅ Successfully re-encrypted
+     Old key: abc-old-key-id → New key: xyz-new-key-id
+...
+
+🎉 Key rotation completed successfully!
+
+📝 Next steps:
+   1. Update .env: KMS_SYMMETRIC_KEY_ID=xyz-new-key-id
+   2. Restart the application
+
+🔐 Security recommendations:
+   - Revoke old key: cosmian kms sym keys revoke -k abc-old-key-id
+   - Keep old key for 1-3 months before deletion
+   - Old key can still decrypt even when revoked
+```
+
+### 방법 2: 수동 키 생성 및 재암호화
+
+UI에서 수동으로 새 키를 생성하고 재암호화합니다.
+
+**사용 시나리오:**
+- 키 속성을 변경하고 싶을 때 (다른 알고리즘, 크기 등)
+- 특정 태그나 메타데이터가 필요할 때
+
 ## 키 로테이션 시나리오
 
 ### 시나리오 1: 즉시 재암호화 (권장)
