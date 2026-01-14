@@ -63,7 +63,16 @@ docker-compose up -d
 
 # 서비스 상태 확인
 docker-compose ps
+
+# KMS가 정상적으로 시작되었는지 확인
+curl http://localhost:9998/version
 ```
+
+**Cosmian KMS 초기 설정:**
+
+KMS 컨테이너가 시작되면 자동으로 SQLite 데이터베이스가 생성됩니다. 애플리케이션 실행 시 자동으로 AES-256 대칭키가 생성되어 데이터 암호화에 사용됩니다.
+
+KMS UI는 `http://localhost:9998/ui`에서 접근할 수 있습니다.
 
 ### 3. 의존성 설치
 
@@ -195,6 +204,24 @@ curl http://localhost:3000/users
 
 ## 문제 해결
 
+### KMS 컨테이너가 시작되지 않는 경우
+
+Cosmian KMS 컨테이너가 계속 재시작된다면:
+
+```bash
+# 컨테이너 로그 확인
+docker-compose logs cosmian-kms
+
+# 컨테이너를 완전히 제거하고 재시작
+docker-compose down -v
+docker-compose up -d
+```
+
+**주의사항:**
+- KMS 이미지는 `/bin/cosmian_kms` 바이너리를 명시적으로 실행해야 합니다 (docker-compose.yml에 설정됨)
+- 데이터는 `/root/cosmian-kms/sqlite-data`에 저장됩니다
+- 최신 버전(`latest` 태그)을 사용하면 자동으로 안정적인 릴리스가 적용됩니다
+
 ### KMS 연결 실패
 ```bash
 # KMS 상태 확인
@@ -202,6 +229,9 @@ curl http://localhost:9998/version
 
 # KMS 로그 확인
 docker-compose logs cosmian-kms
+
+# KMS UI 접속
+open http://localhost:9998/ui
 ```
 
 ### 데이터베이스 연결 실패

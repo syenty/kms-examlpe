@@ -23,22 +23,19 @@ services:
   cosmian-kms:
     image: ghcr.io/cosmian/kms:latest
     container_name: cosmian-kms
-    environment:
-      # KMS runs in default mode (SQLite backend for simplicity)
-      # For production, configure with PostgreSQL backend
-      KMS_PORT: 9998
-      RUST_LOG: info
+    command: ["/bin/cosmian_kms"]
     ports:
       - "9998:9998"
     volumes:
-      - kms_data:/var/lib/cosmian-kms
+      - kms_data:/root/cosmian-kms/sqlite-data
     networks:
       - kms-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9998/version"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9998/version"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
 volumes:
   postgres_data:
