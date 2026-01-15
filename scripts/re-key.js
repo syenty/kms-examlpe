@@ -16,7 +16,7 @@ async function reKey() {
 
   console.log('🔄 Testing Re-Key operation with Cosmian KMS');
   console.log(`KMS URL: ${KMS_URL}`);
-  console.log(`Original Key ID: ${KEY_ID}\n`);
+  console.log(`Key ID: ${KEY_ID}\n`);
 
   try {
     const reKeyRequest = {
@@ -42,35 +42,36 @@ async function reKey() {
 
     // Extract re-key result
     if (response.data && response.data.value) {
-      const newKeyId = response.data.value.find(item => item.tag === 'UniqueIdentifier');
+      const returnedKeyId = response.data.value.find(item => item.tag === 'UniqueIdentifier');
 
       console.log('\n✅ Re-Key operation successful!');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-      if (newKeyId) {
-        console.log(`\n🔑 New Replacement Key ID: ${newKeyId.value}`);
-        console.log(`🔗 Original Key ID: ${KEY_ID}`);
+      if (returnedKeyId) {
+        console.log(`\n🔑 Key ID: ${returnedKeyId.value}`);
+        console.log(`   (Key ID remains unchanged)`);
 
-        console.log('\n📋 Key Relationships:');
-        console.log(`   - Original key now has "Replacement Object" link → ${newKeyId.value}`);
-        console.log(`   - New key has "Replaced Key" link → ${KEY_ID}`);
+        console.log('\n📋 What happened:');
+        console.log(`   - A new replacement key was created internally`);
+        console.log(`   - The replacement key takes over the name attribute`);
+        console.log(`   - Key ID "${returnedKeyId.value}" now points to the new key material`);
+        console.log(`   - KMS maintains links between old and new key materials`);
 
-        console.log('\n💡 Next Steps:');
-        console.log(`   1. Use the new key for future encryption: ${newKeyId.value}`);
-        console.log(`   2. Keep the original key for decrypting existing data: ${KEY_ID}`);
-        console.log(`   3. Plan migration of encrypted data to the new key`);
+        console.log('\n💡 Benefits:');
+        console.log(`   - No need to update application configuration`);
+        console.log(`   - Same key ID continues to work for encryption/decryption`);
+        console.log(`   - Enhanced security through key material rotation`);
       }
 
       console.log('\n⚠️  Important Notes:');
-      console.log('   - The new key inherits attributes from the original key');
       console.log('   - Re-key should only be performed once on a given key');
-      console.log('   - Both keys are linked for lifecycle management');
+      console.log('   - The key ID stays the same, but key material is rotated');
+      console.log('   - KMS handles the lifecycle management automatically');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
       // Return re-key data for potential chaining
       return {
-        originalKeyId: KEY_ID,
-        newKeyId: newKeyId?.value
+        keyId: returnedKeyId?.value
       };
     }
 
