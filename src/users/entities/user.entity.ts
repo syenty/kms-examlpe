@@ -32,8 +32,14 @@ export class User {
   @Column({ type: 'varchar', length: 255 })
   address: string;
 
+  @Column({ type: 'blob', nullable: true })
+  encrypted_address_detail: Buffer;
+
   @Column({ type: 'varchar', length: 255, nullable: true })
-  address_detail: string;
+  address_detail_iv: string;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  address_detail_auth_tag: string;
 
   @Column({ type: 'varchar', length: 255 })
   password_hash: string;
