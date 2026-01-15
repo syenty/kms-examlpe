@@ -57,7 +57,7 @@ export class UsersService {
 
       // 6. User 엔티티 생성
       const user = this.usersRepository.create({
-        encrypted_pii: Buffer.from(piiEncrypted.encryptedData, 'hex'),
+        encrypted_pii: piiEncrypted.encryptedData,
         pii_iv: piiEncrypted.iv,
         pii_auth_tag: piiEncrypted.authTag,
         name_hash: nameHash,
@@ -66,7 +66,7 @@ export class UsersService {
         birth_date_hash: birthDateHash,
         address: createUserDto.address,
         encrypted_address_detail: addressDetailEncrypted
-          ? Buffer.from(addressDetailEncrypted.encryptedData, 'hex')
+          ? addressDetailEncrypted.encryptedData
           : null,
         address_detail_iv: addressDetailEncrypted ? addressDetailEncrypted.iv : null,
         address_detail_auth_tag: addressDetailEncrypted ? addressDetailEncrypted.authTag : null,
@@ -110,7 +110,7 @@ export class UsersService {
       ) {
         // 기존 PII 복호화
         const decryptedPii = await this.kmsService.decryptSymmetric(
-          user.encrypted_pii.toString('hex'),
+          user.encrypted_pii,
           user.pii_iv,
           user.pii_auth_tag,
         );
@@ -140,7 +140,7 @@ export class UsersService {
           JSON.stringify(piiData),
           keyId,
         );
-        user.encrypted_pii = Buffer.from(piiEncrypted.encryptedData, 'hex');
+        user.encrypted_pii = piiEncrypted.encryptedData;
         user.pii_iv = piiEncrypted.iv;
         user.pii_auth_tag = piiEncrypted.authTag;
       }
@@ -158,10 +158,7 @@ export class UsersService {
             updateUserDto.address_detail,
             keyId,
           );
-          user.encrypted_address_detail = Buffer.from(
-            addressDetailEncrypted.encryptedData,
-            'hex',
-          );
+          user.encrypted_address_detail = addressDetailEncrypted.encryptedData;
           user.address_detail_iv = addressDetailEncrypted.iv;
           user.address_detail_auth_tag = addressDetailEncrypted.authTag;
         } else {
@@ -209,7 +206,7 @@ export class UsersService {
     try {
       // PII 데이터 복호화
       const decryptedPii = await this.kmsService.decryptSymmetric(
-        user.encrypted_pii.toString('hex'),
+        user.encrypted_pii,
         user.pii_iv,
         user.pii_auth_tag,
       );
@@ -219,7 +216,7 @@ export class UsersService {
       let addressDetail: string | undefined = undefined;
       if (user.encrypted_address_detail && user.address_detail_iv && user.address_detail_auth_tag) {
         addressDetail = await this.kmsService.decryptSymmetric(
-          user.encrypted_address_detail.toString('hex'),
+          user.encrypted_address_detail,
           user.address_detail_iv,
           user.address_detail_auth_tag,
         );

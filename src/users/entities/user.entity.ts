@@ -11,8 +11,8 @@ export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'blob' })
-  encrypted_pii: Buffer;
+  @Column({ type: 'text' })
+  encrypted_pii: string;
 
   @Column({ type: 'varchar', length: 255 })
   pii_iv: string;
@@ -35,8 +35,8 @@ export class User {
   @Column({ type: 'varchar', length: 255 })
   address: string;
 
-  @Column({ type: 'blob', nullable: true })
-  encrypted_address_detail: Buffer | null;
+  @Column({ type: 'text', nullable: true })
+  encrypted_address_detail: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   address_detail_iv: string | null;
