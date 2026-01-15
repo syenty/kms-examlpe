@@ -2,6 +2,15 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /**
+ * Encryption result with IV and Auth Tag
+ */
+export interface EncryptResult {
+  encryptedData: string;
+  iv: string;
+  authTag: string;
+}
+
+/**
  * Cosmian KMS Client Service
  *
  * This service provides integration with Cosmian KMS for:
@@ -59,8 +68,12 @@ export class KmsService implements OnModuleInit {
    * Encrypt data using symmetric key in KMS
    * @param plaintext Data to encrypt
    * @param keyId Optional key ID (uses default if not provided)
+   * @returns Object containing encrypted data, IV, and authentication tag (all in hex)
    */
-  async encryptSymmetric(plaintext: string, keyId?: string): Promise<string> {
+  async encryptSymmetric(
+    plaintext: string,
+    keyId?: string,
+  ): Promise<EncryptResult> {
     if (!keyId && !this.symmetricKeyId) {
       throw new Error('No symmetric key configured');
     }
@@ -140,20 +153,44 @@ export class KmsService implements OnModuleInit {
     const result = await response.json();
     this.logger.debug(`Response: ${JSON.stringify(result, null, 2)}`);
 
-    // Extract encrypted data from KMIP response
+    // Extract encrypted data, IV, and Auth Tag from KMIP response
     const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
-    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
-    const encryptedData = responsePayload.value.find((item: any) => item.tag === 'Data');
+    const responsePayload = batchItem.value.find(
+      (item: any) => item.tag === 'ResponsePayload',
+    );
 
-    return encryptedData.value;
+    const encryptedData = responsePayload.value.find((item: any) => item.tag === 'Data');
+    const ivCounterNonce = responsePayload.value.find(
+      (item: any) => item.tag === 'IVCounterNonce',
+    );
+    const authTag = responsePayload.value.find(
+      (item: any) => item.tag === 'AuthenticatedEncryptionTag',
+    );
+
+    if (!encryptedData || !ivCounterNonce || !authTag) {
+      throw new Error('Missing encryption components in KMS response');
+    }
+
+    return {
+      encryptedData: encryptedData.value,
+      iv: ivCounterNonce.value,
+      authTag: authTag.value,
+    };
   }
 
   /**
    * Decrypt data using symmetric key in KMS
-   * @param ciphertext Encrypted data (base64)
+   * @param ciphertext Encrypted data (hex)
+   * @param iv Initialization Vector (hex)
+   * @param authTag Authentication Tag (hex)
    * @param keyId Optional key ID (uses default if not provided)
    */
-  async decryptSymmetric(ciphertext: string, keyId?: string): Promise<string> {
+  async decryptSymmetric(
+    ciphertext: string,
+    iv: string,
+    authTag: string,
+    keyId?: string,
+  ): Promise<string> {
     if (!keyId && !this.symmetricKeyId) {
       throw new Error('No symmetric key configured');
     }
@@ -203,6 +240,16 @@ export class KmsService implements OnModuleInit {
                   tag: 'Data',
                   type: 'ByteString',
                   value: ciphertext,
+                },
+                {
+                  tag: 'IVCounterNonce',
+                  type: 'ByteString',
+                  value: iv,
+                },
+                {
+                  tag: 'AuthenticatedEncryptionTag',
+                  type: 'ByteString',
+                  value: authTag,
                 },
               ],
             },

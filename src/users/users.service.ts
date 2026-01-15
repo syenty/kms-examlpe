@@ -31,10 +31,7 @@ export class UsersService {
 
       // 2. PII 데이터 암호화
       const keyId = this.kmsService.getSymmetricKeyId()!;
-      const encryptedPii = await this.kmsService.encryptSymmetric(piiData, keyId);
-
-      // TODO: encryptSymmetric이 현재 hex만 반환하는데, IV와 AuthTag도 필요함
-      // 임시로 encryptedPii를 그대로 사용 (나중에 KMS 응답에서 IV, AuthTag 추출 필요)
+      const piiEncrypted = await this.kmsService.encryptSymmetric(piiData, keyId);
 
       // 3. 해시 생성 (검색용)
       const nameHash = await this.kmsService.hash(createUserDto.name);
@@ -43,9 +40,10 @@ export class UsersService {
       const birthDateHash = await this.kmsService.hash(createUserDto.birth_date);
 
       // 4. address_detail 암호화 (선택사항)
-      let encryptedAddressDetail: string | null = null;
+      let addressDetailEncrypted: { encryptedData: string; iv: string; authTag: string } | null =
+        null;
       if (createUserDto.address_detail) {
-        encryptedAddressDetail = await this.kmsService.encryptSymmetric(
+        addressDetailEncrypted = await this.kmsService.encryptSymmetric(
           createUserDto.address_detail,
           keyId,
         );
@@ -59,19 +57,19 @@ export class UsersService {
 
       // 6. User 엔티티 생성
       const user = this.usersRepository.create({
-        encrypted_pii: Buffer.from(encryptedPii, 'hex'),
-        pii_iv: 'temp_iv', // TODO: KMS에서 IV 추출
-        pii_auth_tag: 'temp_auth_tag', // TODO: KMS에서 AuthTag 추출
+        encrypted_pii: Buffer.from(piiEncrypted.encryptedData, 'hex'),
+        pii_iv: piiEncrypted.iv,
+        pii_auth_tag: piiEncrypted.authTag,
         name_hash: nameHash,
         phone_hash: phoneHash,
         email_hash: emailHash,
         birth_date_hash: birthDateHash,
         address: createUserDto.address,
-        encrypted_address_detail: encryptedAddressDetail
-          ? Buffer.from(encryptedAddressDetail, 'hex')
+        encrypted_address_detail: addressDetailEncrypted
+          ? Buffer.from(addressDetailEncrypted.encryptedData, 'hex')
           : null,
-        address_detail_iv: encryptedAddressDetail ? 'temp_iv' : null,
-        address_detail_auth_tag: encryptedAddressDetail ? 'temp_auth_tag' : null,
+        address_detail_iv: addressDetailEncrypted ? addressDetailEncrypted.iv : null,
+        address_detail_auth_tag: addressDetailEncrypted ? addressDetailEncrypted.authTag : null,
         password_hash: passwordHash,
       });
 
@@ -113,6 +111,8 @@ export class UsersService {
         // 기존 PII 복호화
         const decryptedPii = await this.kmsService.decryptSymmetric(
           user.encrypted_pii.toString('hex'),
+          user.pii_iv,
+          user.pii_auth_tag,
         );
         const piiData = JSON.parse(decryptedPii);
 
@@ -136,11 +136,13 @@ export class UsersService {
 
         // 재암호화
         const keyId = this.kmsService.getSymmetricKeyId()!;
-        const encryptedPii = await this.kmsService.encryptSymmetric(
+        const piiEncrypted = await this.kmsService.encryptSymmetric(
           JSON.stringify(piiData),
           keyId,
         );
-        user.encrypted_pii = Buffer.from(encryptedPii, 'hex');
+        user.encrypted_pii = Buffer.from(piiEncrypted.encryptedData, 'hex');
+        user.pii_iv = piiEncrypted.iv;
+        user.pii_auth_tag = piiEncrypted.authTag;
       }
 
       // address 업데이트
@@ -152,11 +154,16 @@ export class UsersService {
       if (updateUserDto.address_detail !== undefined) {
         if (updateUserDto.address_detail) {
           const keyId = this.kmsService.getSymmetricKeyId()!;
-          const encrypted = await this.kmsService.encryptSymmetric(
+          const addressDetailEncrypted = await this.kmsService.encryptSymmetric(
             updateUserDto.address_detail,
             keyId,
           );
-          user.encrypted_address_detail = Buffer.from(encrypted, 'hex');
+          user.encrypted_address_detail = Buffer.from(
+            addressDetailEncrypted.encryptedData,
+            'hex',
+          );
+          user.address_detail_iv = addressDetailEncrypted.iv;
+          user.address_detail_auth_tag = addressDetailEncrypted.authTag;
         } else {
           user.encrypted_address_detail = null;
           user.address_detail_iv = null;
@@ -203,14 +210,18 @@ export class UsersService {
       // PII 데이터 복호화
       const decryptedPii = await this.kmsService.decryptSymmetric(
         user.encrypted_pii.toString('hex'),
+        user.pii_iv,
+        user.pii_auth_tag,
       );
       const piiData = JSON.parse(decryptedPii);
 
       // address_detail 복호화
       let addressDetail: string | undefined = undefined;
-      if (user.encrypted_address_detail) {
+      if (user.encrypted_address_detail && user.address_detail_iv && user.address_detail_auth_tag) {
         addressDetail = await this.kmsService.decryptSymmetric(
           user.encrypted_address_detail.toString('hex'),
+          user.address_detail_iv,
+          user.address_detail_auth_tag,
         );
       }
 
