@@ -1,10 +1,11 @@
 export class UserResponseDto {
   id: string;
   name: string;
-  email: string;
   phone: string;
-  emailKeyId?: string;
-  phoneKeyId?: string;
+  email: string;
+  birth_date: string;
+  address: string;
+  address_detail?: string;
   createdAt: Date;
   updatedAt: Date;
 

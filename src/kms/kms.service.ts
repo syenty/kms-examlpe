@@ -524,6 +524,80 @@ export class KmsService implements OnModuleInit {
   }
 
   /**
+   * Hash data using KMS
+   * @param data Data to hash
+   * @param algorithm Hashing algorithm (default: SHA256)
+   * @returns Hash value in hex format
+   */
+  async hash(data: string, algorithm: string = 'SHA256'): Promise<string> {
+    const dataHex = Buffer.from(data, 'utf8').toString('hex');
+
+    const request = {
+      tag: 'Hash',
+      type: 'Structure',
+      value: [
+        {
+          tag: 'RequestHeader',
+          type: 'Structure',
+          value: [],
+        },
+        {
+          tag: 'BatchItem',
+          type: 'Structure',
+          value: [
+            {
+              tag: 'Operation',
+              type: 'Enumeration',
+              value: 'Hash',
+            },
+            {
+              tag: 'RequestPayload',
+              type: 'Structure',
+              value: [
+                {
+                  tag: 'CryptographicParameters',
+                  type: 'Structure',
+                  value: [
+                    {
+                      tag: 'HashingAlgorithm',
+                      type: 'Enumeration',
+                      value: algorithm,
+                    },
+                  ],
+                },
+                {
+                  tag: 'Data',
+                  type: 'ByteString',
+                  value: dataHex,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`KMS hash failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // Extract hash data from KMIP response
+    const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
+    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
+    const hashData = responsePayload.value.find((item: any) => item.tag === 'Data');
+
+    return hashData.value;
+  }
+
+  /**
    * Revoke a key (prevent new encryptions, allow existing decryptions)
    *
    * @param keyId The ID of the key to revoke

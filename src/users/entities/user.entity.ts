@@ -29,6 +29,9 @@ export class User {
   @Column({ type: 'varchar', length: 64 })
   email_hash: string;
 
+  @Column({ type: 'varchar', length: 64 })
+  birth_date_hash: string;
+
   @Column({ type: 'varchar', length: 255 })
   address: string;
 
