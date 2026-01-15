@@ -31,19 +31,20 @@ export class UsersService {
 
       // 2. PII 데이터 암호화
       const keyId = this.kmsService.getSymmetricKeyId()!;
-      const piiEncrypted = await this.kmsService.encryptSymmetric(piiData, keyId);
+      const piiEncrypted = await this.kmsService.encrypt(piiData, keyId);
 
-      // 3. 해시 생성 (검색용)
-      const nameHash = await this.kmsService.hash(createUserDto.name);
-      const phoneHash = await this.kmsService.hash(createUserDto.phone);
-      const emailHash = await this.kmsService.hash(createUserDto.email);
-      const birthDateHash = await this.kmsService.hash(createUserDto.birth_date);
+      // 3. 해시 생성 (검색용) - SHA256 사용
+      const crypto = require('crypto');
+      const nameHash = crypto.createHash('sha256').update(createUserDto.name).digest('hex');
+      const phoneHash = crypto.createHash('sha256').update(createUserDto.phone).digest('hex');
+      const emailHash = crypto.createHash('sha256').update(createUserDto.email).digest('hex');
+      const birthDateHash = crypto.createHash('sha256').update(createUserDto.birth_date).digest('hex');
 
       // 4. address_detail 암호화 (선택사항)
       let addressDetailEncrypted: { encryptedData: string; iv: string; authTag: string } | null =
         null;
       if (createUserDto.address_detail) {
-        addressDetailEncrypted = await this.kmsService.encryptSymmetric(
+        addressDetailEncrypted = await this.kmsService.encrypt(
           createUserDto.address_detail,
           keyId,
         );
@@ -109,7 +110,7 @@ export class UsersService {
         updateUserDto.birth_date
       ) {
         // 기존 PII 복호화
-        const decryptedPii = await this.kmsService.decryptSymmetric(
+        const decryptedPii = await this.kmsService.decrypt(
           user.encrypted_pii,
           user.pii_iv,
           user.pii_auth_tag,
@@ -117,26 +118,27 @@ export class UsersService {
         const piiData = JSON.parse(decryptedPii);
 
         // 업데이트할 데이터 병합
+        const crypto = require('crypto');
         if (updateUserDto.name) {
           piiData.name = updateUserDto.name;
-          user.name_hash = await this.kmsService.hash(updateUserDto.name);
+          user.name_hash = crypto.createHash('sha256').update(updateUserDto.name).digest('hex');
         }
         if (updateUserDto.phone) {
           piiData.phone = updateUserDto.phone;
-          user.phone_hash = await this.kmsService.hash(updateUserDto.phone);
+          user.phone_hash = crypto.createHash('sha256').update(updateUserDto.phone).digest('hex');
         }
         if (updateUserDto.email) {
           piiData.email = updateUserDto.email;
-          user.email_hash = await this.kmsService.hash(updateUserDto.email);
+          user.email_hash = crypto.createHash('sha256').update(updateUserDto.email).digest('hex');
         }
         if (updateUserDto.birth_date) {
           piiData.birth_date = updateUserDto.birth_date;
-          user.birth_date_hash = await this.kmsService.hash(updateUserDto.birth_date);
+          user.birth_date_hash = crypto.createHash('sha256').update(updateUserDto.birth_date).digest('hex');
         }
 
         // 재암호화
         const keyId = this.kmsService.getSymmetricKeyId()!;
-        const piiEncrypted = await this.kmsService.encryptSymmetric(
+        const piiEncrypted = await this.kmsService.encrypt(
           JSON.stringify(piiData),
           keyId,
         );
@@ -154,7 +156,7 @@ export class UsersService {
       if (updateUserDto.address_detail !== undefined) {
         if (updateUserDto.address_detail) {
           const keyId = this.kmsService.getSymmetricKeyId()!;
-          const addressDetailEncrypted = await this.kmsService.encryptSymmetric(
+          const addressDetailEncrypted = await this.kmsService.encrypt(
             updateUserDto.address_detail,
             keyId,
           );
@@ -205,7 +207,7 @@ export class UsersService {
   private async toResponseDto(user: User): Promise<UserResponseDto> {
     try {
       // PII 데이터 복호화
-      const decryptedPii = await this.kmsService.decryptSymmetric(
+      const decryptedPii = await this.kmsService.decrypt(
         user.encrypted_pii,
         user.pii_iv,
         user.pii_auth_tag,
@@ -215,7 +217,7 @@ export class UsersService {
       // address_detail 복호화
       let addressDetail: string | undefined = undefined;
       if (user.encrypted_address_detail && user.address_detail_iv && user.address_detail_auth_tag) {
-        addressDetail = await this.kmsService.decryptSymmetric(
+        addressDetail = await this.kmsService.decrypt(
           user.encrypted_address_detail,
           user.address_detail_iv,
           user.address_detail_auth_tag,
