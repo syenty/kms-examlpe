@@ -283,4 +283,126 @@ export class KmsService implements OnModuleInit {
     return hashData.value;
   }
 
+  /**
+   * Create a new symmetric key in KMS
+   * @param keyTag Optional tag for the key
+   * @param keyLength Key length in bits (128, 192, or 256)
+   * @returns The unique identifier of the created key
+   */
+  async createSymmetricKey(keyTag?: string, keyLength: number = 256): Promise<string> {
+    if (![128, 192, 256].includes(keyLength)) {
+      throw new Error('Key length must be 128, 192, or 256 bits');
+    }
+
+    this.logger.log(`Creating symmetric key (${keyLength} bits)${keyTag ? ` with tag: ${keyTag}` : ''}`);
+
+    // Get current ISO 8601 timestamp for activation
+    const currentTime = new Date().toISOString();
+
+    // Build attributes array
+    const attributes: any[] = [
+      {
+        tag: 'ActivationDate',
+        type: 'DateTime',
+        value: currentTime,
+      },
+      {
+        tag: 'CryptographicAlgorithm',
+        type: 'Enumeration',
+        value: 'AES',
+      },
+      {
+        tag: 'CryptographicLength',
+        type: 'Integer',
+        value: keyLength,
+      },
+      {
+        tag: 'CryptographicUsageMask',
+        type: 'Integer',
+        value: 2108, // Encrypt | Decrypt
+      },
+      {
+        tag: 'KeyFormatType',
+        type: 'Enumeration',
+        value: 'TransparentSymmetricKey',
+      },
+      {
+        tag: 'ObjectType',
+        type: 'Enumeration',
+        value: 'SymmetricKey',
+      },
+    ];
+
+    // Add tag if provided
+    if (keyTag) {
+      attributes.push({
+        tag: 'Attribute',
+        value: [
+          {
+            tag: 'VendorIdentification',
+            type: 'TextString',
+            value: 'cosmian',
+          },
+          {
+            tag: 'AttributeName',
+            type: 'TextString',
+            value: 'tag',
+          },
+          {
+            tag: 'AttributeValue',
+            type: 'TextString',
+            value: JSON.stringify([keyTag]),
+          },
+        ],
+      });
+    }
+
+    const request = {
+      tag: 'Create',
+      value: [
+        {
+          tag: 'ObjectType',
+          type: 'Enumeration',
+          value: 'SymmetricKey',
+        },
+        {
+          tag: 'Attributes',
+          value: attributes,
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      this.logger.error(`KMS create key failed: ${response.status} ${response.statusText}`);
+      this.logger.error(`Response body: ${errorBody}`);
+      throw new Error(`KMS create key failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // Extract key ID from KMIP response
+    const uniqueId = result.value.find((item: any) => item.tag === 'UniqueIdentifier');
+
+    if (!uniqueId) {
+      throw new Error('Missing key ID in KMS response');
+    }
+
+    this.logger.log(`✅ Symmetric key created successfully!`);
+    this.logger.log(`   Key ID: ${uniqueId.value}`);
+    if (keyTag) {
+      this.logger.log(`   Tag: ${keyTag}`);
+    }
+    this.logger.log(`   Length: ${keyLength} bits`);
+    this.logger.log(`   Algorithm: AES-${keyLength}-GCM`);
+
+    return uniqueId.value;
+  }
+
 }
