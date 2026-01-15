@@ -37,7 +37,7 @@ kms-example/
 │   │   └── users.module.ts
 │   ├── app.module.ts
 │   └── main.ts
-├── docker-compose.yml       # Docker 구성
+├── docker-compose.kms.yml   # KMS Docker 구성
 └── package.json
 ```
 
@@ -77,16 +77,18 @@ KMS_SYMMETRIC_KEY_ID=your-symmetric-key-id-here
 
 ```bash
 # PostgreSQL과 Cosmian KMS 시작
-docker compose up -d
+docker-compose -f docker-compose.kms.yml up -d
 
 # 서비스 상태 확인
-docker compose ps
+docker-compose -f docker-compose.kms.yml ps
 
 # KMS가 정상적으로 시작되었는지 확인
 curl http://localhost:9998/version
 ```
 
-**중요**: Docker 이미지의 기본 entrypoint에 문제가 있어, `docker-compose.yml`에서 명시적으로 `/bin/cosmian_kms`를 entrypoint로 지정했습니다.
+**중요**:
+- KMS 전용 Docker Compose 파일(`docker-compose.kms.yml`)을 사용합니다.
+- Docker 이미지의 기본 entrypoint에 문제가 있어, `docker-compose.kms.yml`에서 명시적으로 `/bin/cosmian_kms`를 entrypoint로 지정했습니다.
 
 ### 3. 의존성 설치 및 애플리케이션 실행
 
@@ -363,7 +365,7 @@ curl http://localhost:3000/users
 curl http://localhost:9998/version
 
 # KMS 로그 확인
-docker compose logs cosmian-kms
+docker-compose -f docker-compose.kms.yml logs cosmian-kms
 
 # KMS UI 접속
 open http://localhost:9998/ui
@@ -373,7 +375,7 @@ open http://localhost:9998/ui
 
 ```bash
 # PostgreSQL 상태 확인
-docker compose logs postgres
+docker-compose -f docker-compose.kms.yml logs postgres
 
 # 데이터베이스 접속 테스트
 docker exec -it kms-postgres psql -U postgres -d userdb
@@ -383,10 +385,10 @@ docker exec -it kms-postgres psql -U postgres -d userdb
 
 ```bash
 # 서비스 중지
-docker compose down
+docker-compose -f docker-compose.kms.yml down
 
 # 데이터까지 삭제
-docker compose down -v
+docker-compose -f docker-compose.kms.yml down -v
 ```
 
 ## 라이선스
