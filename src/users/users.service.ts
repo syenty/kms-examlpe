@@ -33,12 +33,11 @@ export class UsersService {
       const keyId = this.kmsService.getSymmetricKeyId()!;
       const piiEncrypted = await this.kmsService.encrypt(piiData, keyId);
 
-      // 3. 해시 생성 (검색용) - SHA256 사용
-      const crypto = require('crypto');
-      const nameHash = crypto.createHash('sha256').update(createUserDto.name).digest('hex');
-      const phoneHash = crypto.createHash('sha256').update(createUserDto.phone).digest('hex');
-      const emailHash = crypto.createHash('sha256').update(createUserDto.email).digest('hex');
-      const birthDateHash = crypto.createHash('sha256').update(createUserDto.birth_date).digest('hex');
+      // 3. 해시 생성 (검색용) - KMS SHA256 사용
+      const nameHash = await this.kmsService.hash(createUserDto.name);
+      const phoneHash = await this.kmsService.hash(createUserDto.phone);
+      const emailHash = await this.kmsService.hash(createUserDto.email);
+      const birthDateHash = await this.kmsService.hash(createUserDto.birth_date);
 
       // 4. address_detail 암호화 (선택사항)
       let addressDetailEncrypted: { encryptedData: string; iv: string; authTag: string } | null =
@@ -118,22 +117,21 @@ export class UsersService {
         const piiData = JSON.parse(decryptedPii);
 
         // 업데이트할 데이터 병합
-        const crypto = require('crypto');
         if (updateUserDto.name) {
           piiData.name = updateUserDto.name;
-          user.name_hash = crypto.createHash('sha256').update(updateUserDto.name).digest('hex');
+          user.name_hash = await this.kmsService.hash(updateUserDto.name);
         }
         if (updateUserDto.phone) {
           piiData.phone = updateUserDto.phone;
-          user.phone_hash = crypto.createHash('sha256').update(updateUserDto.phone).digest('hex');
+          user.phone_hash = await this.kmsService.hash(updateUserDto.phone);
         }
         if (updateUserDto.email) {
           piiData.email = updateUserDto.email;
-          user.email_hash = crypto.createHash('sha256').update(updateUserDto.email).digest('hex');
+          user.email_hash = await this.kmsService.hash(updateUserDto.email);
         }
         if (updateUserDto.birth_date) {
           piiData.birth_date = updateUserDto.birth_date;
-          user.birth_date_hash = crypto.createHash('sha256').update(updateUserDto.birth_date).digest('hex');
+          user.birth_date_hash = await this.kmsService.hash(updateUserDto.birth_date);
         }
 
         // 재암호화
