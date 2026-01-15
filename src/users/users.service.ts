@@ -57,6 +57,7 @@ export class UsersService {
 
       // 6. User 엔티티 생성
       const user = this.usersRepository.create({
+        pii_key_id: keyId,
         encrypted_pii: piiEncrypted.encryptedData,
         pii_iv: piiEncrypted.iv,
         pii_auth_tag: piiEncrypted.authTag,
@@ -65,6 +66,7 @@ export class UsersService {
         email_hash: emailHash,
         birth_date_hash: birthDateHash,
         address: createUserDto.address,
+        address_detail_key_id: addressDetailEncrypted ? keyId : null,
         encrypted_address_detail: addressDetailEncrypted
           ? addressDetailEncrypted.encryptedData
           : null,
@@ -108,11 +110,12 @@ export class UsersService {
         updateUserDto.email ||
         updateUserDto.birth_date
       ) {
-        // 기존 PII 복호화
+        // 기존 PII 복호화 (저장된 key_id 사용)
         const decryptedPii = await this.kmsService.decrypt(
           user.encrypted_pii,
           user.pii_iv,
           user.pii_auth_tag,
+          user.pii_key_id,
         );
         const piiData = JSON.parse(decryptedPii);
 
@@ -140,6 +143,7 @@ export class UsersService {
           JSON.stringify(piiData),
           keyId,
         );
+        user.pii_key_id = keyId;
         user.encrypted_pii = piiEncrypted.encryptedData;
         user.pii_iv = piiEncrypted.iv;
         user.pii_auth_tag = piiEncrypted.authTag;
@@ -158,10 +162,12 @@ export class UsersService {
             updateUserDto.address_detail,
             keyId,
           );
+          user.address_detail_key_id = keyId;
           user.encrypted_address_detail = addressDetailEncrypted.encryptedData;
           user.address_detail_iv = addressDetailEncrypted.iv;
           user.address_detail_auth_tag = addressDetailEncrypted.authTag;
         } else {
+          user.address_detail_key_id = null;
           user.encrypted_address_detail = null;
           user.address_detail_iv = null;
           user.address_detail_auth_tag = null;
@@ -204,21 +210,23 @@ export class UsersService {
 
   private async toResponseDto(user: User): Promise<UserResponseDto> {
     try {
-      // PII 데이터 복호화
+      // PII 데이터 복호화 (저장된 key_id 사용)
       const decryptedPii = await this.kmsService.decrypt(
         user.encrypted_pii,
         user.pii_iv,
         user.pii_auth_tag,
+        user.pii_key_id,
       );
       const piiData = JSON.parse(decryptedPii);
 
-      // address_detail 복호화
+      // address_detail 복호화 (저장된 key_id 사용)
       let addressDetail: string | undefined = undefined;
       if (user.encrypted_address_detail && user.address_detail_iv && user.address_detail_auth_tag) {
         addressDetail = await this.kmsService.decrypt(
           user.encrypted_address_detail,
           user.address_detail_iv,
           user.address_detail_auth_tag,
+          user.address_detail_key_id || undefined,
         );
       }
 

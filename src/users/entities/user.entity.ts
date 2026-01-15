@@ -11,6 +11,9 @@ export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ type: 'varchar', length: 255 })
+  pii_key_id: string;
+
   @Column({ type: 'text' })
   encrypted_pii: string;
 
@@ -34,6 +37,9 @@ export class User {
 
   @Column({ type: 'varchar', length: 255 })
   address: string;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  address_detail_key_id: string | null;
 
   @Column({ type: 'text', nullable: true })
   encrypted_address_detail: string | null;
