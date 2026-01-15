@@ -463,4 +463,50 @@ export class KmsService implements OnModuleInit {
     return key;
   }
 
+  /**
+   * Rotate encryption key
+   * Creates a new key and deactivates the old one
+   * Requires server restart for the new key to take effect
+   * @param kmsKeyId The KMS key ID of the key to deactivate
+   * @returns The KMS key ID of the newly created key
+   */
+  async keyRotate(kmsKeyId: string): Promise<string> {
+    // 1. KMS 키 ID로 기존 키 조회 및 검증
+    const existingKey = await this.symmetricKeyRepository.findOne({
+      where: { kms_key_id: kmsKeyId },
+    });
+
+    if (!existingKey) {
+      throw new Error(`Key with KMS key id ${kmsKeyId} not found`);
+    }
+
+    if (!existingKey.active) {
+      throw new Error(`Key with KMS key id ${kmsKeyId} is already inactive`);
+    }
+
+    // 2. 새로운 키 생성
+    const newKmsKeyId = await this.createSymmetricKey('default', 256);
+
+    // 3. 새로운 키 DB에 저장
+    const newKey = this.symmetricKeyRepository.create({
+      kms_key_id: newKmsKeyId,
+      tag: 'default',
+      key_name: 'default',
+      description: 'Key created via rotation',
+      active: true,
+    });
+    await this.symmetricKeyRepository.save(newKey);
+
+    // 4. 기존 키 비활성화
+    existingKey.active = false;
+    existingKey.deactivated_at = new Date();
+    await this.symmetricKeyRepository.save(existingKey);
+
+    this.logger.log(
+      `Key rotation completed: deactivated ${existingKey.kms_key_id}, created ${newKmsKeyId}`,
+    );
+
+    return newKmsKeyId;
+  }
+
 }
