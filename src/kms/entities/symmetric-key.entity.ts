@@ -3,7 +3,6 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  UpdateDateColumn,
 } from 'typeorm';
 
 @Entity('symmetric_keys')
@@ -15,6 +14,10 @@ export class SymmetricKey {
   @Column({ type: 'varchar', length: 255, unique: true })
   kms_key_id: string;
 
+  // 키의 태그 (선택)
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  tag: string | null;
+
   // 키의 용도/이름 (예: 'default', 'pii_encryption', 'address_encryption')
   @Column({ type: 'varchar', length: 100 })
   key_name: string;
@@ -25,7 +28,7 @@ export class SymmetricKey {
 
   // 키가 활성 상태인지 (현재 사용 중인 키)
   @Column({ type: 'boolean', default: true })
-  is_active: boolean;
+  active: boolean;
 
   // 키 생성일
   @CreateDateColumn()
@@ -38,7 +41,4 @@ export class SymmetricKey {
   // 키가 폐기된 날짜 (더 이상 사용 불가)
   @Column({ type: 'timestamp', nullable: true })
   revoked_at: Date | null;
-
-  @UpdateDateColumn()
-  updated_at: Date;
 }
