@@ -14,21 +14,30 @@ export class User {
   @Column({ type: 'varchar', length: 100 })
   name: string;
 
-  @Column({ type: 'text' })
-  encryptedEmail: string;
+  @Column({ type: 'varchar', length: 20 })
+  phone: string;
 
-  @Column({ type: 'text' })
-  encryptedPhone: string;
+  @Column({ type: 'varchar', length: 255 })
+  email: string;
+
+  @Column({ type: 'date' })
+  birth_date: Date;
+
+  @Column({ type: 'varchar', length: 255 })
+  address: string;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  emailKeyId: string;
+  address_detail: string;
 
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  phoneKeyId: string;
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  provider_token: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  password_hash: string;
 
   @CreateDateColumn()
-  createdAt: Date;
+  created_at: Date;
 
   @UpdateDateColumn()
-  updatedAt: Date;
+  updated_at: Date;
 }
