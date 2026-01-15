@@ -1,5 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, IsNull } from 'typeorm';
+import { SymmetricKey } from './entities/symmetric-key.entity';
 
 /**
  * Encryption result with IV and Auth Tag
@@ -17,31 +20,69 @@ export interface EncryptResult {
 export class KmsService implements OnModuleInit {
   private readonly logger = new Logger(KmsService.name);
   private readonly kmsUrl: string;
-  private readonly symmetricKeyId: string | null;
+  private symmetricKeyId: string | null = null;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    @InjectRepository(SymmetricKey)
+    private symmetricKeyRepository: Repository<SymmetricKey>,
+  ) {
     this.kmsUrl = this.configService.get<string>('KMS_URL') || 'http://localhost:9998';
-    this.symmetricKeyId = this.configService.get<string>('KMS_SYMMETRIC_KEY_ID') || null;
   }
 
   async onModuleInit() {
     this.logger.log('Initializing KMS Service...');
     this.logger.log(`KMS URL: ${this.kmsUrl}`);
 
-    if (!this.symmetricKeyId) {
-      this.logger.warn('⚠️  KMS_SYMMETRIC_KEY_ID is not configured!');
-      this.logger.warn('   Set it in .env file to enable encryption');
-    } else {
-      this.logger.log(`Symmetric Key ID: ${this.symmetricKeyId}`);
-    }
-
     try {
       const version = await this.getKmsVersion();
       this.logger.log(`KMS Version: ${version}`);
+
+      // Load or create active symmetric key
+      await this.loadOrCreateActiveKey();
+
       this.logger.log('✅ KMS Service initialized successfully');
     } catch (error) {
-      this.logger.error('❌ Failed to connect to KMS:', error.message);
-      throw new Error('KMS connection failed');
+      this.logger.error('❌ Failed to initialize KMS:', error.message);
+      throw new Error('KMS initialization failed');
+    }
+  }
+
+  /**
+   * Load active symmetric key from DB or create a new one
+   */
+  private async loadOrCreateActiveKey(): Promise<void> {
+    this.logger.log('Loading active symmetric key...');
+
+    const activeKey = await this.getActiveSymmetricKey();
+
+    if (activeKey) {
+      this.symmetricKeyId = activeKey.kms_key_id;
+      this.logger.log(`✅ Active key found: ${this.symmetricKeyId}`);
+      if (activeKey.tag) {
+        this.logger.log(`   Tag: ${activeKey.tag}`);
+      }
+      this.logger.log(`   Name: ${activeKey.key_name}`);
+      this.logger.log(`   Created: ${activeKey.created_at}`);
+    } else {
+      this.logger.warn('⚠️  No active key found. Creating new key...');
+
+      // Create new key in KMS
+      const kmsKeyId = await this.createSymmetricKey('default', 256);
+
+      // Save to database
+      const newKey = this.symmetricKeyRepository.create({
+        kms_key_id: kmsKeyId,
+        tag: 'default',
+        key_name: 'default',
+        description: 'Auto-generated default encryption key',
+        active: true,
+      });
+
+      await this.symmetricKeyRepository.save(newKey);
+
+      this.symmetricKeyId = kmsKeyId;
+      this.logger.log(`✅ New key created and saved: ${this.symmetricKeyId}`);
     }
   }
 
@@ -403,6 +444,23 @@ export class KmsService implements OnModuleInit {
     this.logger.log(`   Algorithm: AES-${keyLength}-GCM`);
 
     return uniqueId.value;
+  }
+
+  /**
+   * Get the most recent active symmetric key
+   * @returns The most recent active symmetric key or null if not found
+   */
+  async getActiveSymmetricKey(): Promise<SymmetricKey | null> {
+    const key = await this.symmetricKeyRepository.findOne({
+      where: {
+        active: true,
+        deactivated_at: IsNull(),
+        revoked_at: IsNull(),
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    return key;
   }
 
 }

@@ -8,10 +8,6 @@ class EnvironmentVariables {
 
   @IsString()
   @IsNotEmpty()
-  KMS_SYMMETRIC_KEY_ID: string;
-
-  @IsString()
-  @IsNotEmpty()
   DB_HOST: string;
 
   @IsString()
