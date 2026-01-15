@@ -71,7 +71,7 @@ export class UsersService {
         address_detail_iv: addressDetailEncrypted ? addressDetailEncrypted.iv : null,
         address_detail_auth_tag: addressDetailEncrypted ? addressDetailEncrypted.authTag : null,
         password_hash: passwordHash,
-      });
+      } as Partial<User>);
 
       const savedUser = await this.usersRepository.save(user);
       return this.toResponseDto(savedUser);

@@ -36,13 +36,13 @@ export class User {
   address: string;
 
   @Column({ type: 'blob', nullable: true })
-  encrypted_address_detail: Buffer;
+  encrypted_address_detail: Buffer | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  address_detail_iv: string;
+  address_detail_iv: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  address_detail_auth_tag: string;
+  address_detail_auth_tag: string | null;
 
   @Column({ type: 'varchar', length: 255 })
   password_hash: string;
