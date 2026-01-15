@@ -2,28 +2,25 @@ const axios = require('axios');
 
 const KMS_URL = process.env.KMS_URL || 'http://localhost:9998';
 const KEY_ID = process.env.KMS_SYMMETRIC_KEY_ID || process.argv[2];
-const KEY_FORMAT = process.argv[3] || 'Raw';
 
 async function getKey() {
   if (!KEY_ID) {
     console.error('❌ Error: KEY_ID is required');
-    console.log('Usage: node scripts/get.js [KEY_ID] [KEY_FORMAT]');
-    console.log('   or: KMS_SYMMETRIC_KEY_ID=xxx node scripts/get.js [KEY_FORMAT]');
-    console.log('\nSupported Key Formats: Raw, PKCS8, X509, PKCS12');
+    console.log('Usage: node scripts/get.js [KEY_ID]');
+    console.log('   or: KMS_SYMMETRIC_KEY_ID=xxx node scripts/get.js');
     console.log('\nExample:');
     console.log('   node scripts/get.js my-key-id');
-    console.log('   node scripts/get.js my-key-id Raw');
     process.exit(1);
   }
 
   console.log('🔑 Testing Get operation with Cosmian KMS');
   console.log(`KMS URL: ${KMS_URL}`);
-  console.log(`Key ID: ${KEY_ID}`);
-  console.log(`Key Format: ${KEY_FORMAT}\n`);
+  console.log(`Key ID: ${KEY_ID}\n`);
 
   try {
     const getRequest = {
       tag: 'Get',
+      type: 'Structure',
       value: [
         {
           tag: 'UniqueIdentifier',
@@ -31,9 +28,9 @@ async function getKey() {
           value: KEY_ID
         },
         {
-          tag: 'KeyFormatType',
+          tag: 'KeyWrapType',
           type: 'Enumeration',
-          value: KEY_FORMAT
+          value: 'AsRegistered'
         }
       ]
     };
