@@ -11,24 +11,51 @@ export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'varchar', length: 100 })
-  name: string;
+  @Column({ type: 'varchar', length: 255 })
+  pii_key_id: string;
 
   @Column({ type: 'text' })
-  encryptedEmail: string;
+  encrypted_pii: string;
 
-  @Column({ type: 'text' })
-  encryptedPhone: string;
+  @Column({ type: 'varchar', length: 255 })
+  pii_iv: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  pii_auth_tag: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  name_hash: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  phone_hash: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  email_hash: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  birth_date_hash: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  address: string;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  emailKeyId: string;
+  address_detail_key_id: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  encrypted_address_detail: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  phoneKeyId: string;
+  address_detail_iv: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  address_detail_auth_tag: string | null;
+
+  @Column({ type: 'varchar', length: 255 })
+  password_hash: string;
 
   @CreateDateColumn()
-  createdAt: Date;
+  created_at: Date;
 
   @UpdateDateColumn()
-  updatedAt: Date;
+  updated_at: Date;
 }

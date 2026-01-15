@@ -1,55 +1,102 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, IsNull } from 'typeorm';
+import { SymmetricKey } from './entities/symmetric-key.entity';
+
+/**
+ * Encryption result with IV and Auth Tag
+ */
+export interface EncryptResult {
+  encryptedData: string;
+  iv: string;
+  authTag: string;
+}
 
 /**
  * Cosmian KMS Client Service
- *
- * This service provides integration with Cosmian KMS for:
- * - Key management (create, retrieve, delete)
- * - Data encryption/decryption using KMS-managed keys
- * - Key rotation support
  */
 @Injectable()
 export class KmsService implements OnModuleInit {
   private readonly logger = new Logger(KmsService.name);
   private readonly kmsUrl: string;
   private symmetricKeyId: string | null = null;
-  private rsaKeyId: string | null = null;
 
-  constructor(private configService: ConfigService) {
-    // Environment variables are validated at app startup, so these values are guaranteed to exist
-    this.kmsUrl = this.configService.get<string>('KMS_URL')!;
+  constructor(
+    private configService: ConfigService,
+    @InjectRepository(SymmetricKey)
+    private symmetricKeyRepository: Repository<SymmetricKey>,
+  ) {
+    this.kmsUrl = this.configService.get<string>('KMS_URL') || 'http://localhost:9998';
   }
 
   async onModuleInit() {
+    this.logger.log('Initializing KMS Service...');
+    this.logger.log(`KMS URL: ${this.kmsUrl}`);
+
     try {
-      // Verify KMS connectivity
-      const version = await this.getVersion();
-      this.logger.log(`Connected to Cosmian KMS version: ${version}`);
+      const version = await this.getKmsVersion();
+      this.logger.log(`KMS Version: ${version}`);
 
-      // Load existing keys from environment (validated at app startup)
-      this.symmetricKeyId = this.configService.get<string>('KMS_SYMMETRIC_KEY_ID')!;
-      this.rsaKeyId = this.configService.get<string>('KMS_RSA_KEY_ID') || null;
+      // Load or create active symmetric key
+      await this.loadOrCreateActiveKey();
 
-      this.logger.log(`Using symmetric key for new data: ${this.symmetricKeyId}`);
-      this.logger.log(`Note: Old data with different key IDs can still be decrypted`);
-
-      if (this.rsaKeyId) {
-        this.logger.log(`Using RSA key: ${this.rsaKeyId}`);
-      }
+      this.logger.log('✅ KMS Service initialized successfully');
     } catch (error) {
-      this.logger.error(`Failed to connect to KMS: ${error.message}`);
-      throw error;
+      this.logger.error('❌ Failed to initialize KMS:', error.message);
+      throw new Error('KMS initialization failed');
     }
   }
 
   /**
-   * Get KMS server version
+   * Load active symmetric key from DB or create a new one
    */
-  async getVersion(): Promise<string> {
+  private async loadOrCreateActiveKey(): Promise<void> {
+    this.logger.log('Loading active symmetric key...');
+
+    const activeKey = await this.getActiveSymmetricKey();
+
+    if (activeKey) {
+      this.symmetricKeyId = activeKey.kms_key_id;
+      this.logger.log(`✅ Active key found: ${this.symmetricKeyId}`);
+      if (activeKey.tag) {
+        this.logger.log(`   Tag: ${activeKey.tag}`);
+      }
+      this.logger.log(`   Name: ${activeKey.key_name}`);
+      this.logger.log(`   Created: ${activeKey.created_at}`);
+    } else {
+      this.logger.warn('⚠️  No active key found. Creating new key...');
+
+      // Create new key in KMS
+      const kmsKeyId = await this.createSymmetricKey('default', 256);
+
+      // Save to database
+      const newKey = this.symmetricKeyRepository.create({
+        kms_key_id: kmsKeyId,
+        tag: 'default',
+        key_name: 'default',
+        description: 'Auto-generated default encryption key',
+        active: true,
+      });
+
+      await this.symmetricKeyRepository.save(newKey);
+
+      this.symmetricKeyId = kmsKeyId;
+      this.logger.log(`✅ New key created and saved: ${this.symmetricKeyId}`);
+    }
+  }
+
+  getSymmetricKeyId(): string | null {
+    return this.symmetricKeyId;
+  }
+
+  /**
+   * Get KMS version
+   */
+  async getKmsVersion(): Promise<string> {
     const response = await fetch(`${this.kmsUrl}/version`);
     if (!response.ok) {
-      throw new Error(`KMS version check failed: ${response.statusText}`);
+      throw new Error(`Failed to get KMS version: ${response.statusText}`);
     }
     const version = await response.text();
     return version.replace(/"/g, '');
@@ -59,8 +106,9 @@ export class KmsService implements OnModuleInit {
    * Encrypt data using symmetric key in KMS
    * @param plaintext Data to encrypt
    * @param keyId Optional key ID (uses default if not provided)
+   * @returns Object containing encrypted data, IV, and authentication tag (all in hex)
    */
-  async encryptSymmetric(plaintext: string, keyId?: string): Promise<string> {
+  async encrypt(plaintext: string, keyId?: string): Promise<EncryptResult> {
     if (!keyId && !this.symmetricKeyId) {
       throw new Error('No symmetric key configured');
     }
@@ -68,67 +116,46 @@ export class KmsService implements OnModuleInit {
     const targetKeyId = keyId || this.symmetricKeyId;
     this.logger.debug(`Encrypting with key: ${targetKeyId}`);
 
-    // KMIP Encrypt operation
+    // Convert plaintext to hex
+    const plaintextHex = Buffer.from(plaintext, 'utf8').toString('hex');
+
+    // KMIP Encrypt request
     const request = {
       tag: 'Encrypt',
-      type: 'Structure',
       value: [
         {
-          tag: 'RequestHeader',
-          type: 'Structure',
-          value: [],
+          tag: 'UniqueIdentifier',
+          type: 'TextString',
+          value: targetKeyId,
         },
         {
-          tag: 'BatchItem',
-          type: 'Structure',
+          tag: 'CryptographicParameters',
           value: [
             {
-              tag: 'Operation',
+              tag: 'BlockCipherMode',
               type: 'Enumeration',
-              value: 'Encrypt',
+              value: 'GCM',
             },
             {
-              tag: 'RequestPayload',
-              type: 'Structure',
-              value: [
-                {
-                  tag: 'UniqueIdentifier',
-                  type: 'TextString',
-                  value: targetKeyId,
-                },
-                {
-                  tag: 'CryptographicParameters',
-                  type: 'Structure',
-                  value: [
-                    {
-                      tag: 'BlockCipherMode',
-                      type: 'Enumeration',
-                      value: 'GCM',
-                    },
-                  ],
-                },
-                {
-                  tag: 'Data',
-                  type: 'ByteString',
-                  value: Buffer.from(plaintext, 'utf8').toString('hex'),
-                },
-              ],
+              tag: 'CryptographicAlgorithm',
+              type: 'Enumeration',
+              value: 'AES',
             },
           ],
         },
+        {
+          tag: 'Data',
+          type: 'ByteString',
+          value: plaintextHex,
+        },
       ],
     };
-
-    this.logger.debug(`Sending KMIP request to ${this.kmsUrl}/kmip/2_1`);
-    this.logger.debug(`Request: ${JSON.stringify(request, null, 2)}`);
 
     const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
-
-    this.logger.debug(`Response status: ${response.status} ${response.statusText}`);
 
     if (!response.ok) {
       const errorBody = await response.text();
@@ -140,73 +167,79 @@ export class KmsService implements OnModuleInit {
     const result = await response.json();
     this.logger.debug(`Response: ${JSON.stringify(result, null, 2)}`);
 
-    // Extract encrypted data from KMIP response
-    const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
-    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
-    const encryptedData = responsePayload.value.find((item: any) => item.tag === 'Data');
+    // Extract encrypted data, IV, and Auth Tag from KMIP response
+    const encryptedData = result.value.find((item: any) => item.tag === 'Data');
+    const ivCounterNonce = result.value.find((item: any) => item.tag === 'IVCounterNonce');
+    const authTag = result.value.find((item: any) => item.tag === 'AuthenticatedEncryptionTag');
 
-    return encryptedData.value;
+    if (!encryptedData || !ivCounterNonce || !authTag) {
+      throw new Error('Missing encryption components in KMS response');
+    }
+
+    return {
+      encryptedData: encryptedData.value,
+      iv: ivCounterNonce.value,
+      authTag: authTag.value,
+    };
   }
 
   /**
    * Decrypt data using symmetric key in KMS
-   * @param ciphertext Encrypted data (base64)
+   * @param ciphertext Encrypted data (hex)
+   * @param iv Initialization Vector (hex)
+   * @param authTag Authentication Tag (hex)
    * @param keyId Optional key ID (uses default if not provided)
    */
-  async decryptSymmetric(ciphertext: string, keyId?: string): Promise<string> {
+  async decrypt(
+    ciphertext: string,
+    iv: string,
+    authTag: string,
+    keyId?: string,
+  ): Promise<string> {
     if (!keyId && !this.symmetricKeyId) {
       throw new Error('No symmetric key configured');
     }
 
     const targetKeyId = keyId || this.symmetricKeyId;
 
-    // KMIP Decrypt operation
+    // KMIP Decrypt request
     const request = {
       tag: 'Decrypt',
-      type: 'Structure',
       value: [
         {
-          tag: 'RequestHeader',
-          type: 'Structure',
-          value: [],
+          tag: 'UniqueIdentifier',
+          type: 'TextString',
+          value: targetKeyId,
         },
         {
-          tag: 'BatchItem',
-          type: 'Structure',
+          tag: 'CryptographicParameters',
           value: [
             {
-              tag: 'Operation',
+              tag: 'BlockCipherMode',
               type: 'Enumeration',
-              value: 'Decrypt',
+              value: 'GCM',
             },
             {
-              tag: 'RequestPayload',
-              type: 'Structure',
-              value: [
-                {
-                  tag: 'UniqueIdentifier',
-                  type: 'TextString',
-                  value: targetKeyId,
-                },
-                {
-                  tag: 'CryptographicParameters',
-                  type: 'Structure',
-                  value: [
-                    {
-                      tag: 'BlockCipherMode',
-                      type: 'Enumeration',
-                      value: 'GCM',
-                    },
-                  ],
-                },
-                {
-                  tag: 'Data',
-                  type: 'ByteString',
-                  value: ciphertext,
-                },
-              ],
+              tag: 'CryptographicAlgorithm',
+              type: 'Enumeration',
+              value: 'AES',
             },
           ],
+        },
+        {
+          tag: 'Data',
+          type: 'ByteString',
+          value: ciphertext,
+        },
+        {
+          tag: 'IVCounterNonce',
+          type: 'ByteString',
+          value: iv,
+        },
+        {
+          tag: 'AuthenticatedEncryptionTag',
+          type: 'ByteString',
+          value: authTag,
         },
       ],
     };
@@ -218,58 +251,102 @@ export class KmsService implements OnModuleInit {
     });
 
     if (!response.ok) {
+      const errorBody = await response.text();
+      this.logger.error(`KMS decrypt failed: ${response.status} ${response.statusText}`);
+      this.logger.error(`Response body: ${errorBody}`);
       throw new Error(`KMS decrypt failed: ${response.statusText}`);
     }
 
     const result = await response.json();
 
     // Extract decrypted data from KMIP response
-    const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
-    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
-    const decryptedData = responsePayload.value.find((item: any) => item.tag === 'Data');
+    const decryptedData = result.value.find((item: any) => item.tag === 'Data');
 
-    return Buffer.from(decryptedData.value, 'hex').toString('utf8');
+    if (!decryptedData) {
+      throw new Error('Missing decrypted data in KMS response');
+    }
+
+    // Convert hex to string
+    const decryptedHex = decryptedData.value;
+    const decryptedBuffer = Buffer.from(decryptedHex, 'hex');
+    return decryptedBuffer.toString('utf8');
   }
 
   /**
-   * Set the symmetric key ID to use
+   * Hash data using KMS
+   * @param data Data to hash
+   * @param algorithm Hashing algorithm (default: SHA256)
+   * @returns Hash value in hex format
    */
-  setSymmetricKeyId(keyId: string) {
-    this.symmetricKeyId = keyId;
-    this.logger.log(`Symmetric key set to: ${keyId}`);
-  }
+  async hash(data: string, algorithm: string = 'SHA256'): Promise<string> {
+    const dataHex = Buffer.from(data, 'utf8').toString('hex');
 
-  /**
-   * Set the RSA key ID to use
-   */
-  setRsaKeyId(keyId: string) {
-    this.rsaKeyId = keyId;
-    this.logger.log(`RSA key set to: ${keyId}`);
-  }
+    const request = {
+      tag: 'Hash',
+      value: [
+        {
+          tag: 'CryptographicParameters',
+          value: [
+            {
+              tag: 'HashingAlgorithm',
+              type: 'Enumeration',
+              value: algorithm,
+            },
+          ],
+        },
+        {
+          tag: 'Data',
+          type: 'ByteString',
+          value: dataHex,
+        },
+      ],
+    };
 
-  /**
-   * Get current symmetric key ID
-   */
-  getSymmetricKeyId(): string | null {
-    return this.symmetricKeyId;
-  }
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
 
-  /**
-   * Get current RSA key ID
-   */
-  getRsaKeyId(): string | null {
-    return this.rsaKeyId;
+    if (!response.ok) {
+      throw new Error(`KMS hash failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // Extract hash data from KMIP response
+    const hashData = result.value.find((item: any) => item.tag === 'Data');
+
+    if (!hashData) {
+      throw new Error('Missing hash data in KMS response');
+    }
+
+    return hashData.value;
   }
 
   /**
    * Create a new symmetric key in KMS
-   *
-   * @param keySize Key size in bits (128, 192, or 256)
-   * @param tag Optional tag for the key
-   * @returns The ID of the newly created key
+   * @param keyTag Optional tag for the key
+   * @param keyLength Key length in bits (128, 192, or 256)
+   * @returns The unique identifier of the created key
    */
-  async createSymmetricKey(keySize: number = 256, tag?: string): Promise<string> {
+  async createSymmetricKey(keyTag?: string, keyLength: number = 256): Promise<string> {
+    if (![128, 192, 256].includes(keyLength)) {
+      throw new Error('Key length must be 128, 192, or 256 bits');
+    }
+
+    this.logger.log(`Creating symmetric key (${keyLength} bits)${keyTag ? ` with tag: ${keyTag}` : ''}`);
+
+    // Get current ISO 8601 timestamp for activation
+    const currentTime = new Date().toISOString();
+
+    // Build attributes array
     const attributes: any[] = [
+      {
+        tag: 'ActivationDate',
+        type: 'DateTime',
+        value: currentTime,
+      },
       {
         tag: 'CryptographicAlgorithm',
         type: 'Enumeration',
@@ -278,7 +355,7 @@ export class KmsService implements OnModuleInit {
       {
         tag: 'CryptographicLength',
         type: 'Integer',
-        value: keySize,
+        value: keyLength,
       },
       {
         tag: 'CryptographicUsageMask',
@@ -290,75 +367,48 @@ export class KmsService implements OnModuleInit {
         type: 'Enumeration',
         value: 'TransparentSymmetricKey',
       },
+      {
+        tag: 'ObjectType',
+        type: 'Enumeration',
+        value: 'SymmetricKey',
+      },
     ];
 
     // Add tag if provided
-    if (tag) {
+    if (keyTag) {
       attributes.push({
-        tag: 'VendorAttributes',
-        type: 'Structure',
+        tag: 'Attribute',
         value: [
           {
-            tag: 'VendorAttributes',
-            type: 'Structure',
-            value: [
-              {
-                tag: 'VendorIdentification',
-                type: 'TextString',
-                value: 'cosmian',
-              },
-              {
-                tag: 'AttributeName',
-                type: 'TextString',
-                value: 'tag',
-              },
-              {
-                tag: 'AttributeValue',
-                type: 'TextString',
-                value: tag,
-              },
-            ],
+            tag: 'VendorIdentification',
+            type: 'TextString',
+            value: 'cosmian',
+          },
+          {
+            tag: 'AttributeName',
+            type: 'TextString',
+            value: 'tag',
+          },
+          {
+            tag: 'AttributeValue',
+            type: 'TextString',
+            value: JSON.stringify([keyTag]),
           },
         ],
       });
     }
 
-    // KMIP Create operation
     const request = {
       tag: 'Create',
-      type: 'Structure',
       value: [
         {
-          tag: 'RequestHeader',
-          type: 'Structure',
-          value: [],
+          tag: 'ObjectType',
+          type: 'Enumeration',
+          value: 'SymmetricKey',
         },
         {
-          tag: 'BatchItem',
-          type: 'Structure',
-          value: [
-            {
-              tag: 'Operation',
-              type: 'Enumeration',
-              value: 'Create',
-            },
-            {
-              tag: 'RequestPayload',
-              type: 'Structure',
-              value: [
-                {
-                  tag: 'ObjectType',
-                  type: 'Enumeration',
-                  value: 'SymmetricKey',
-                },
-                {
-                  tag: 'Attributes',
-                  type: 'Structure',
-                  value: attributes,
-                },
-              ],
-            },
-          ],
+          tag: 'Attributes',
+          value: attributes,
         },
       ],
     };
@@ -370,222 +420,93 @@ export class KmsService implements OnModuleInit {
     });
 
     if (!response.ok) {
+      const errorBody = await response.text();
+      this.logger.error(`KMS create key failed: ${response.status} ${response.statusText}`);
+      this.logger.error(`Response body: ${errorBody}`);
       throw new Error(`KMS create key failed: ${response.statusText}`);
     }
 
     const result = await response.json();
 
-    // Extract new key ID from KMIP response
-    const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
-    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
-    const uniqueIdentifier = responsePayload.value.find((item: any) => item.tag === 'UniqueIdentifier');
+    // Extract key ID from KMIP response
+    const uniqueId = result.value.find((item: any) => item.tag === 'UniqueIdentifier');
 
-    const newKeyId = uniqueIdentifier.value;
-
-    this.logger.log(`✅ Symmetric key created`);
-    this.logger.log(`   Key ID: ${newKeyId}`);
-    this.logger.log(`   Algorithm: AES-${keySize}`);
-    if (tag) {
-      this.logger.log(`   Tag: ${tag}`);
+    if (!uniqueId) {
+      throw new Error('Missing key ID in KMS response');
     }
 
-    return newKeyId;
+    this.logger.log(`✅ Symmetric key created successfully!`);
+    this.logger.log(`   Key ID: ${uniqueId.value}`);
+    if (keyTag) {
+      this.logger.log(`   Tag: ${keyTag}`);
+    }
+    this.logger.log(`   Length: ${keyLength} bits`);
+    this.logger.log(`   Algorithm: AES-${keyLength}-GCM`);
+
+    return uniqueId.value;
   }
 
   /**
-   * Delete (Destroy) a key from KMS
-   * WARNING: This is irreversible!
-   *
-   * @param keyId The ID of the key to delete
+   * Get the most recent active symmetric key
+   * @returns The most recent active symmetric key or null if not found
    */
-  async deleteKey(keyId: string): Promise<void> {
-    const request = {
-      tag: 'Destroy',
-      type: 'Structure',
-      value: [
-        {
-          tag: 'RequestHeader',
-          type: 'Structure',
-          value: [],
-        },
-        {
-          tag: 'BatchItem',
-          type: 'Structure',
-          value: [
-            {
-              tag: 'Operation',
-              type: 'Enumeration',
-              value: 'Destroy',
-            },
-            {
-              tag: 'RequestPayload',
-              type: 'Structure',
-              value: [
-                {
-                  tag: 'UniqueIdentifier',
-                  type: 'TextString',
-                  value: keyId,
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    };
-
-    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+  async getActiveSymmetricKey(): Promise<SymmetricKey | null> {
+    const key = await this.symmetricKeyRepository.findOne({
+      where: {
+        active: true,
+        deactivated_at: IsNull(),
+        revoked_at: IsNull(),
+      },
+      order: { created_at: 'DESC' },
     });
 
-    if (!response.ok) {
-      throw new Error(`KMS delete key failed: ${response.statusText}`);
-    }
-
-    this.logger.log(`✅ Key deleted (destroyed): ${keyId}`);
-    this.logger.warn(`   This operation is irreversible!`);
+    return key;
   }
 
   /**
-   * Re-key operation: Generate a replacement key for an existing symmetric key
-   * This is the native KMS way to rotate keys
-   *
-   * @param existingKeyId The ID of the existing symmetric key to replace
-   * @returns The ID of the new replacement key
+   * Rotate encryption key
+   * Creates a new key and deactivates the old one
+   * Requires server restart for the new key to take effect
+   * @param kmsKeyId The KMS key ID of the key to deactivate
+   * @returns The KMS key ID of the newly created key
    */
-  async reKeySymmetric(existingKeyId?: string): Promise<string> {
-    const targetKeyId = existingKeyId || this.symmetricKeyId;
-
-    if (!targetKeyId) {
-      throw new Error('No symmetric key ID provided for re-key operation');
-    }
-
-    // KMIP ReKey operation
-    const request = {
-      tag: 'ReKey',
-      type: 'Structure',
-      value: [
-        {
-          tag: 'RequestHeader',
-          type: 'Structure',
-          value: [],
-        },
-        {
-          tag: 'BatchItem',
-          type: 'Structure',
-          value: [
-            {
-              tag: 'Operation',
-              type: 'Enumeration',
-              value: 'ReKey',
-            },
-            {
-              tag: 'RequestPayload',
-              type: 'Structure',
-              value: [
-                {
-                  tag: 'UniqueIdentifier',
-                  type: 'TextString',
-                  value: targetKeyId,
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    };
-
-    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+  async keyRotate(kmsKeyId: string): Promise<string> {
+    // 1. KMS 키 ID로 기존 키 조회 및 검증
+    const existingKey = await this.symmetricKeyRepository.findOne({
+      where: { kms_key_id: kmsKeyId },
     });
 
-    if (!response.ok) {
-      throw new Error(`KMS re-key failed: ${response.statusText}`);
+    if (!existingKey) {
+      throw new Error(`Key with KMS key id ${kmsKeyId} not found`);
     }
 
-    const result = await response.json();
+    if (!existingKey.active) {
+      throw new Error(`Key with KMS key id ${kmsKeyId} is already inactive`);
+    }
 
-    // Extract new key ID from KMIP response
-    const batchItem = result.value.find((item: any) => item.tag === 'BatchItem');
-    const responsePayload = batchItem.value.find((item: any) => item.tag === 'ResponsePayload');
-    const uniqueIdentifier = responsePayload.value.find((item: any) => item.tag === 'UniqueIdentifier');
+    // 2. 새로운 키 생성
+    const newKmsKeyId = await this.createSymmetricKey('default', 256);
 
-    const newKeyId = uniqueIdentifier.value;
-
-    this.logger.log(`✅ Re-key successful`);
-    this.logger.log(`   Old key: ${targetKeyId}`);
-    this.logger.log(`   New key: ${newKeyId}`);
-    this.logger.log(`   Note: KMS automatically created a link between old and new keys`);
-
-    return newKeyId;
-  }
-
-  /**
-   * Revoke a key (prevent new encryptions, allow existing decryptions)
-   *
-   * @param keyId The ID of the key to revoke
-   * @param reason Revocation reason
-   */
-  async revokeKey(keyId: string, reason: string = 'Unspecified'): Promise<void> {
-    const request = {
-      tag: 'Revoke',
-      type: 'Structure',
-      value: [
-        {
-          tag: 'RequestHeader',
-          type: 'Structure',
-          value: [],
-        },
-        {
-          tag: 'BatchItem',
-          type: 'Structure',
-          value: [
-            {
-              tag: 'Operation',
-              type: 'Enumeration',
-              value: 'Revoke',
-            },
-            {
-              tag: 'RequestPayload',
-              type: 'Structure',
-              value: [
-                {
-                  tag: 'UniqueIdentifier',
-                  type: 'TextString',
-                  value: keyId,
-                },
-                {
-                  tag: 'RevocationReason',
-                  type: 'Structure',
-                  value: [
-                    {
-                      tag: 'RevocationReasonCode',
-                      type: 'Enumeration',
-                      value: reason,
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    };
-
-    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+    // 3. 새로운 키 DB에 저장
+    const newKey = this.symmetricKeyRepository.create({
+      kms_key_id: newKmsKeyId,
+      tag: 'default',
+      key_name: 'default',
+      description: 'Key created via rotation',
+      active: true,
     });
+    await this.symmetricKeyRepository.save(newKey);
 
-    if (!response.ok) {
-      throw new Error(`KMS revoke failed: ${response.statusText}`);
-    }
+    // 4. 기존 키 비활성화
+    existingKey.active = false;
+    existingKey.deactivated_at = new Date();
+    await this.symmetricKeyRepository.save(existingKey);
 
-    this.logger.log(`✅ Key revoked: ${keyId}`);
-    this.logger.log(`   Reason: ${reason}`);
+    this.logger.log(
+      `Key rotation completed: deactivated ${existingKey.kms_key_id}, created ${newKmsKeyId}`,
+    );
+
+    return newKmsKeyId;
   }
+
 }

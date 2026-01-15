@@ -37,7 +37,7 @@ kms-example/
 │   │   └── users.module.ts
 │   ├── app.module.ts
 │   └── main.ts
-├── docker-compose.yml       # Docker 구성
+├── docker-compose.kms.yml   # KMS Docker 구성
 └── package.json
 ```
 
@@ -67,26 +67,24 @@ DB_DATABASE=userdb
 
 # KMS Configuration (REQUIRED)
 KMS_URL=http://localhost:9998
-
-# REQUIRED: KMS Symmetric Key ID (KMS UI에서 키 생성 후 여기에 ID 입력)
-# 이 값이 설정되지 않으면 애플리케이션이 시작되지 않습니다!
-KMS_SYMMETRIC_KEY_ID=your-symmetric-key-id-here
 ```
 
 ### 2. Docker Compose로 서비스 실행
 
 ```bash
 # PostgreSQL과 Cosmian KMS 시작
-docker compose up -d
+docker-compose -f docker-compose.kms.yml up -d
 
 # 서비스 상태 확인
-docker compose ps
+docker-compose -f docker-compose.kms.yml ps
 
 # KMS가 정상적으로 시작되었는지 확인
 curl http://localhost:9998/version
 ```
 
-**중요**: Docker 이미지의 기본 entrypoint에 문제가 있어, `docker-compose.yml`에서 명시적으로 `/bin/cosmian_kms`를 entrypoint로 지정했습니다.
+**중요**:
+- KMS 전용 Docker Compose 파일(`docker-compose.kms.yml`)을 사용합니다.
+- Docker 이미지의 기본 entrypoint에 문제가 있어, `docker-compose.kms.yml`에서 명시적으로 `/bin/cosmian_kms`를 entrypoint로 지정했습니다.
 
 ### 3. 의존성 설치 및 애플리케이션 실행
 
@@ -112,115 +110,87 @@ npm run start:prod
 - `development`: 개발 서버 환경 - DB 스키마 자동 동기화, SQL 로그 활성화
 - `production`: 프로덕션 환경 - DB 스키마 자동 동기화 비활성화 (마이그레이션 사용 권장), SQL 로그 비활성화
 
-## KMS 키 생성 및 설정
+## KMS 키 관리
 
-### 1. KMS UI에서 키 생성
+### 자동 키 관리
 
-브라우저에서 KMS UI에 접속:
+애플리케이션 시작 시 자동으로 키를 관리합니다:
+
+1. **서버 시작 시 자동 처리:**
+   - DB에 활성 키가 있으면 해당 키 로드
+   - 활성 키가 없으면 자동으로 새 키 생성 및 DB에 저장
+
+2. **시작 로그 확인:**
 ```
-http://localhost:9998/ui
+✅ Active key found: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   Tag: default
+   Name: default
+   Created: 2024-01-15T...
 ```
 
-#### Symmetric Key (대칭키) 생성
+또는 키가 없는 경우:
+```
+⚠️  No active key found. Creating new key...
+✅ New key created and saved: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
 
-1. KMS UI 접속
-2. 좌측 메뉴에서 **"Keys"** 클릭
-3. **"Create Key"** 버튼 클릭
-4. 키 타입 선택: **"Symmetric Key"**
-5. 설정:
-   - **Algorithm**: AES
-   - **Key Size**: 256 bits
-   - **Tags**: `user-data-encryption` (선택사항)
-6. **"Create"** 버튼 클릭
-7. **생성된 키의 ID를 복사** (UUID 형식)
+### 수동 키 생성 (선택사항)
 
-#### RSA Key Pair (비대칭키) 생성 (선택사항)
-
-1. **"Create Key"** 버튼 클릭
-2. 키 타입 선택: **"RSA Key Pair"**
-3. 설정:
-   - **Key Size**: 2048 또는 4096 bits
-   - **Tags**: `user-rsa` (선택사항)
-4. **"Create"** 버튼 클릭
-5. **생성된 키의 ID를 복사**
-
-### 2. .env 파일에 키 ID 설정
-
-생성한 키의 ID를 `.env` 파일에 추가:
+스크립트를 통해 미리 키를 생성할 수 있습니다:
 
 ```bash
-# .env 파일 편집
-nano .env
+# 기본 256비트 키 생성
+node scripts/create.js
 
-# 또는
-vi .env
+# 태그를 지정하여 키 생성
+node scripts/create.js user-encryption 256
+
+# 다른 크기의 키 생성
+node scripts/create.js 128
+node scripts/create.js 192
 ```
 
-키 ID 입력:
-```env
-KMS_SYMMETRIC_KEY_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-### 3. 애플리케이션 재시작
-
-환경 변수가 적용되도록 애플리케이션 재시작:
-
-```bash
-# 로컬 개발 모드로 재시작
-# Ctrl+C로 중지 후
-npm run start:local
-
-# 또는 개발 서버 모드 (SQL 로그 포함)
-npm run start:dev
-```
-
-시작 로그에서 KMS 연동 확인:
-```
-✅ Encryption service initialized with Cosmian KMS
-   Using symmetric key: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-**⚠️ 중요:** `KMS_SYMMETRIC_KEY_ID`가 설정되지 않으면 다음 오류가 발생하며 애플리케이션이 시작되지 않습니다:
-```
-❌ KMS_SYMMETRIC_KEY_ID is not configured in .env
-   Please create a key and set KMS_SYMMETRIC_KEY_ID
-Error: KMS_SYMMETRIC_KEY_ID is required but not configured
-```
+생성된 키 ID는 자동으로 DB에 저장되며, 별도로 `.env`에 설정할 필요가 없습니다.
 
 ## API 엔드포인트
 
-### KMS 관리 API
+### 키 로테이션 API
 
-KMS 키를 API를 통해 관리할 수 있습니다. 자세한 내용은 [KMS_API.md](KMS_API.md)를 참고하세요.
-
-**주요 엔드포인트:**
+키 로테이션을 통해 보안을 강화할 수 있습니다.
 
 ```bash
-# 새 키 생성
-POST /kms/keys
+# 키 로테이션 (기존 키 비활성화 + 새 키 생성)
+POST /kms/rotate
+Content-Type: application/json
 
-# 키 로테이션 (Re-key)
-POST /kms/keys/rotate
-
-# 키 폐기
-POST /kms/keys/:keyId/revoke
-
-# 키 삭제
-DELETE /kms/keys/:keyId
-
-# 현재 키 조회
-POST /kms/keys/current
+{
+  "keyId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+}
 ```
+
+**동작 방식:**
+1. 지정된 KMS 키 ID로 DB에서 키 조회
+2. 새로운 키를 KMS에 생성
+3. 새 키를 DB에 저장 (active=true)
+4. 기존 키를 비활성화 (active=false, deactivated_at=현재시간)
+5. **서버 재시작 시 새 키가 자동으로 활성화됨**
 
 **예시:**
 ```bash
-# 새 Symmetric Key 생성
-curl -X POST http://localhost:3000/kms/keys \
+curl -X POST http://localhost:3000/kms/rotate \
   -H "Content-Type: application/json" \
   -d '{
-    "tag": "user-data-encryption",
-    "keySize": 256
+    "keyId": "632fdf9f-a854-4e83-9948-4cc31706d344"
   }'
+```
+
+**응답:**
+```json
+{
+  "success": true,
+  "message": "Key rotation completed. Please restart the server to use the new key.",
+  "newKmsKeyId": "new-key-id-here"
+}
 ```
 
 ### 사용자 관리 API
@@ -273,40 +243,87 @@ DELETE /users/:id
 
 이 서비스는 **Cosmian KMS를 통한 암호화만 지원**합니다.
 
-### KMS 모드
+### 암호화 프로세스
 
-`KMS_SYMMETRIC_KEY_ID`가 **반드시 설정**되어야 합니다.
+1. **키 관리**:
+   - KMS에서 키 생성
+   - DB(`symmetric_keys` 테이블)에 키 메타데이터 저장
+   - 서버 시작 시 활성 키 자동 로드
 
-1. **키 관리**: Cosmian KMS에서 중앙 관리
-2. **암호화**: KMS API를 통해 암호화 수행
-3. **저장**: 암호화된 데이터와 키 ID를 PostgreSQL에 저장
-4. **복호화**: 키 ID로 KMS에서 복호화 수행
+2. **암호화**:
+   - KMS API를 통해 데이터 암호화
+   - 암호화된 데이터, IV, Auth Tag, **키 ID**를 DB에 저장
+
+3. **복호화**:
+   - DB에서 저장된 키 ID를 사용하여 KMS에서 복호화
+   - 키 로테이션 후에도 이전 키로 암호화된 데이터 복호화 가능
 
 **장점:**
 - 중앙화된 키 관리
-- 키 로테이션 지원
-- 감사 로그 자동 기록
-- 액세스 제어 및 권한 관리
-- KMIP 표준 준수
+- 키 로테이션 지원 (이전 데이터 호환성 유지)
+- 각 데이터마다 사용된 키 ID 추적
+- KMIP 2.1 표준 준수
 
 ```
-[사용자 입력] → [NestJS] → [KMS 암호화] → [PostgreSQL 저장]
-                              ↓
-                    [Cosmian KMS Server]
-                              ↓
-                    [API 응답] ← [KMS 복호화] ← [PostgreSQL 조회]
+[사용자 생성/수정]
+       ↓
+[KMS 암호화 - 현재 활성 키 사용]
+       ↓
+[PostgreSQL 저장: encrypted_data + iv + auth_tag + key_id]
+
+[사용자 조회]
+       ↓
+[PostgreSQL 조회: 저장된 key_id 포함]
+       ↓
+[KMS 복호화 - 저장된 key_id 사용]
+       ↓
+[복호화된 데이터 반환]
 ```
 
 ## 데이터베이스 스키마
 
+### symmetric_keys 테이블
+키 메타데이터를 저장합니다.
+
+```sql
+CREATE TABLE symmetric_keys (
+  id UUID PRIMARY KEY,
+  kms_key_id VARCHAR(255) UNIQUE NOT NULL,  -- KMS에 저장된 키의 ID
+  tag VARCHAR(100),                         -- 키 태그 (선택)
+  key_name VARCHAR(100) NOT NULL,           -- 키 이름
+  description TEXT,                         -- 키 설명
+  active BOOLEAN DEFAULT TRUE,              -- 활성 상태
+  created_at TIMESTAMP DEFAULT NOW(),       -- 생성일
+  deactivated_at TIMESTAMP,                 -- 비활성화 날짜
+  revoked_at TIMESTAMP                      -- 폐기 날짜
+);
+```
+
+### users 테이블
+사용자 데이터를 저장합니다.
+
 ```sql
 CREATE TABLE users (
   id UUID PRIMARY KEY,
-  name VARCHAR(100) NOT NULL,
-  encrypted_email TEXT NOT NULL,
-  encrypted_phone TEXT NOT NULL,
-  email_key_id VARCHAR(255),
-  phone_key_id VARCHAR(255),
+  -- PII 데이터 (name, phone, email, birth_date)
+  pii_key_id VARCHAR(255) NOT NULL,         -- 사용된 키 ID
+  encrypted_pii TEXT NOT NULL,              -- 암호화된 PII JSON
+  pii_iv VARCHAR(255) NOT NULL,             -- IV
+  pii_auth_tag VARCHAR(255) NOT NULL,       -- Auth Tag
+  -- 해시 값 (검색용)
+  name_hash VARCHAR(64) NOT NULL,
+  phone_hash VARCHAR(64) NOT NULL,
+  email_hash VARCHAR(64) NOT NULL,
+  birth_date_hash VARCHAR(64) NOT NULL,
+  -- 주소
+  address VARCHAR(255) NOT NULL,
+  address_detail_key_id VARCHAR(255),       -- 사용된 키 ID
+  encrypted_address_detail TEXT,            -- 암호화된 상세주소
+  address_detail_iv VARCHAR(255),
+  address_detail_auth_tag VARCHAR(255),
+  -- 비밀번호
+  password_hash VARCHAR(255) NOT NULL,
+  -- 메타데이터
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -316,26 +333,39 @@ CREATE TABLE users (
 
 정기적인 키 교체로 보안을 강화할 수 있습니다.
 
-### KMS 네이티브 Re-key 사용 (권장)
+### API를 통한 키 로테이션
 
 ```bash
-# 현재 키를 기반으로 새 키 자동 생성 및 데이터 재암호화
-npm run rotate-keys:native
+# 현재 활성 키의 KMS Key ID로 로테이션 요청
+curl -X POST http://localhost:3000/kms/rotate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "keyId": "현재-키의-KMS-ID"
+  }'
 ```
 
-KMS가 자동으로:
-- 대체 키 생성
-- 이전 키와 새 키 간 링크 생성
-- 키 속성 복사
+**프로세스:**
+1. 새 키 생성 (KMS)
+2. 새 키를 DB에 저장 (active=true)
+3. 기존 키 비활성화 (active=false)
+4. **서버 재시작** → 새 키 자동 활성화
 
-자세한 내용은 [KEY_ROTATION.md](KEY_ROTATION.md)를 참고하세요.
+### 키 로테이션 후 데이터 처리
+
+- ✅ **이전 데이터**: 저장된 `key_id`로 복호화 가능 (이전 키 사용)
+- ✅ **새 데이터**: 자동으로 새 키로 암호화
+- ✅ **업데이트된 데이터**: 자동으로 새 키로 재암호화
+
+**주의:** 서버를 재시작해야 새 키가 활성화됩니다.
 
 ## 보안 고려사항
 
-- 민감한 정보(이메일, 전화번호)는 Cosmian KMS를 통해 암호화되어 데이터베이스에 저장
+- 민감한 정보(PII, 상세주소)는 Cosmian KMS를 통해 AES-256-GCM으로 암호화
+- 각 암호화된 데이터마다 사용된 키 ID 저장 → 키 로테이션 후에도 복호화 가능
 - 중앙화된 키 관리로 보안 정책 일관성 유지
 - KMIP 2.1 표준 준수
-- 키 로테이션 및 폐기 지원
+- 키 로테이션 지원 (이전 데이터 호환성 보장)
+- 비밀번호는 bcrypt로 별도 해싱
 - 정기적인 키 로테이션 권장 (6-12개월)
 
 ## API 테스트
@@ -363,7 +393,7 @@ curl http://localhost:3000/users
 curl http://localhost:9998/version
 
 # KMS 로그 확인
-docker compose logs cosmian-kms
+docker-compose -f docker-compose.kms.yml logs cosmian-kms
 
 # KMS UI 접속
 open http://localhost:9998/ui
@@ -373,7 +403,7 @@ open http://localhost:9998/ui
 
 ```bash
 # PostgreSQL 상태 확인
-docker compose logs postgres
+docker-compose -f docker-compose.kms.yml logs postgres
 
 # 데이터베이스 접속 테스트
 docker exec -it kms-postgres psql -U postgres -d userdb
@@ -383,10 +413,10 @@ docker exec -it kms-postgres psql -U postgres -d userdb
 
 ```bash
 # 서비스 중지
-docker compose down
+docker-compose -f docker-compose.kms.yml down
 
 # 데이터까지 삭제
-docker compose down -v
+docker-compose -f docker-compose.kms.yml down -v
 ```
 
 ## 라이선스
