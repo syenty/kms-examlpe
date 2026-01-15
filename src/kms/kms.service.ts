@@ -230,4 +230,111 @@ export class KmsService implements OnModuleInit {
     const decryptedBuffer = Buffer.from(decryptedHex, 'hex');
     return decryptedBuffer.toString('utf8');
   }
+
+  /**
+   * Hash data using KMS
+   * @param data Data to hash
+   * @param algorithm Hashing algorithm (default: SHA256)
+   * @returns Hash value in hex format
+   */
+  async hash(data: string, algorithm: string = 'SHA256'): Promise<string> {
+    const dataHex = Buffer.from(data, 'utf8').toString('hex');
+
+    const request = {
+      tag: 'Hash',
+      value: [
+        {
+          tag: 'CryptographicParameters',
+          value: [
+            {
+              tag: 'HashingAlgorithm',
+              type: 'Enumeration',
+              value: algorithm,
+            },
+          ],
+        },
+        {
+          tag: 'Data',
+          type: 'ByteString',
+          value: dataHex,
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`KMS hash failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // Extract hash data from KMIP response
+    const hashData = result.value.find((item: any) => item.tag === 'Data');
+
+    if (!hashData) {
+      throw new Error('Missing hash data in KMS response');
+    }
+
+    return hashData.value;
+  }
+
+  /**
+   * Re-key operation: Create a replacement key linked to the original key
+   * @param keyId The ID of the key to be replaced
+   * @returns The new replacement key ID
+   */
+  async reKey(keyId?: string): Promise<string> {
+    if (!keyId && !this.symmetricKeyId) {
+      throw new Error('No symmetric key configured');
+    }
+
+    const targetKeyId = keyId || this.symmetricKeyId;
+    this.logger.log(`Re-keying: ${targetKeyId}`);
+
+    const request = {
+      tag: 'ReKey',
+      type: 'Structure',
+      value: [
+        {
+          tag: 'UniqueIdentifier',
+          type: 'TextString',
+          value: targetKeyId,
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.kmsUrl}/kmip/2_1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      this.logger.error(`KMS re-key failed: ${response.status} ${response.statusText}`);
+      this.logger.error(`Response body: ${errorBody}`);
+      throw new Error(`KMS re-key failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    // Extract new key ID from KMIP response
+    const newKeyId = result.value.find((item: any) => item.tag === 'UniqueIdentifier');
+
+    if (!newKeyId) {
+      throw new Error('Missing new key ID in KMS response');
+    }
+
+    this.logger.log(`✅ Re-key successful!`);
+    this.logger.log(`   Old key: ${targetKeyId}`);
+    this.logger.log(`   New key: ${newKeyId.value}`);
+    this.logger.log(`   Note: KMS automatically created a link between old and new keys`);
+
+    return newKeyId.value;
+  }
 }
